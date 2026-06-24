@@ -10,6 +10,11 @@
 #include <zephyr/drivers/adc.h>
 #include <hpm_adc16_drv.h>
 #include <hpm_clock_drv.h>
+/* core_local_mem_to_sys_address() lives in the SoC hpm_misc.h (static inline);
+ * the stock driver uses it for the seq-DMA buffer but omits the include (same
+ * pattern the dma/ethernet glue drivers include explicitly). Without it the
+ * call is an implicit decl and fails to link. */
+#include <hpm_misc.h>
 #if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)
 #include <hpm_trgm_drv.h>
 #endif
