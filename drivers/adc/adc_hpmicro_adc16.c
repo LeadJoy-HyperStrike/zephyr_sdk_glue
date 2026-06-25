@@ -168,7 +168,14 @@ static void hpmicro_adc16_start_channel(const struct device *dev)
 	data->channel_num = channel_num;
 	seq_cfg.seq_len    = channel_num;
     seq_cfg.restart_en = false;
-    seq_cfg.cont_en    = true;
+    /*
+     * HS2 fix: one-shot, NOT continuous. Zephyr's adc_read() is a single
+     * acquisition. With cont_en=true the sequence free-runs after the SW
+     * trigger and seq_full_complete fires forever -> an ISR storm that starves
+     * the USBD/shell threads, so the board hangs on the very first adc_read
+     * (USB enumeration fails, no shell prompt). Disable continuous mode.
+     */
+    seq_cfg.cont_en    = false;
     seq_cfg.sw_trig_en = true;
     seq_cfg.hw_trig_en = true;
 	adc16_set_seq_config(base, &seq_cfg);
@@ -256,6 +263,16 @@ static int hpmicro_adc16_init(const struct device *dev)
 	adc16_config_t adc_config;
 	int err;
 
+	/*
+	 * HS2 fix: ungate the ADC peripheral clock BEFORE touching ADC registers.
+	 * clock_set_adc_source() only writes the ADCCLK mux; it does NOT enable the
+	 * peripheral. Without adding the ADC clock to a clock group the block stays
+	 * gated and the adc16_init() register access below stalls the AHB bus -- a
+	 * silent, banner-less boot hang (the recurring "enable ADC => dead board").
+	 * The HPM SDK's board_init_adc_clock() does this add-to-group first; the
+	 * Zephyr glue driver omitted it.
+	 */
+	clock_add_to_group(config->adc_clock_name, 0);
 	clock_set_adc_source(config->adc_clock_name, config->adc_clock_src);
 	clock_set_source_divider(config->src_clock_name, config->src_clock_src, config->src_clock_div);
 
