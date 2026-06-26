@@ -158,6 +158,14 @@ SECTIONS
 		KEEP(*(.openocd_debug))
 		KEEP(*(".openocd_debug.*"))
 
+		/* HPM SoC drivers (adc/dma/gpio/uart) emit their ISRs into a custom
+		 * ".isr" input section (see soc/hpmicro/common/ISR.ld). Nothing else
+		 * collects it under the Zephyr/MCUboot linker layout, so it would
+		 * orphan to address 0 and IRQ_CONNECT() would record a near-NULL
+		 * handler -> jump-to-0 fault on the first such IRQ (ADC was the hit).
+		 */
+		KEEP(*(.isr))
+
 		__text_region_start = .;
 
 		*(.text)
