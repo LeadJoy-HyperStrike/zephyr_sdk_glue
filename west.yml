@@ -35,6 +35,7 @@ manifest:
         name-allowlist:
           - west-commands
           - mbedtls
+          - zcbor            # CBOR codec: required by MCUMGR/SMP + img_mgmt (Phase 4 DFU)
     - name: sdk_env
       repo-path: sdk_env
       path: sdk_env
