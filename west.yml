@@ -18,6 +18,8 @@ manifest:
       url-base: git@192.168.11.211:oss
     - name: github
       url-base: https://github.com/hpmicro
+    - name: leadjoy
+      url-base: https://github.com/LeadJoy-HyperStrike
     - name: cherry-embedded
       url-base: https://github.com/cherry-embedded/
 
@@ -26,8 +28,9 @@ manifest:
 
   projects:
     - name: zephyr
+      remote: leadjoy            # LeadJoy fork: carries the HS2 usbd patches (multi-HID HS ep, MS OS 0xEE, set_bcd_device)
       repo-path: zephyr
-      revision: zsg_v0.7.0
+      revision: port/hpm-complete  # our changes branch; fork main tracks hpmicro/zephyr upstream. Freeze: pin a commit/tag. Base = zsg_v0.7.0
       import:
         name-allowlist:
           - west-commands
