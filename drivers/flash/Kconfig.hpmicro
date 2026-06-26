@@ -10,5 +10,8 @@ config FLASH_HPMICRO
 	select HAS_HPMSDK_FLASH
 	select FLASH_HAS_DRIVER_ENABLED
 	select FLASH_HAS_PAGE_LAYOUT
+	# XPI NOR requires sector erase before program (.erase is implemented);
+	# enables STREAM_FLASH_ERASE so img_mgmt/stream_flash erase before write.
+	select FLASH_HAS_EXPLICIT_ERASE
 	help
 	  Enable the hpmicro flash driver.
