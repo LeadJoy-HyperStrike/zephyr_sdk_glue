@@ -59,8 +59,9 @@ manifest:
       path: modules/fs/fatfs
       revision: 427159bf95ea49b7680facffaa29ad506b42709b
     - name: mcuboot
+      remote: leadjoy            # LeadJoy fork: carries HS2 MCUboot USB CDC recovery on Zephyr's new USB stack
       repo-path: mcuboot
-      revision: c098a7fe3aa03f8e21b6fe083dd8d9704db78a03
+      revision: port/hpm-usbd-recovery  # fork branch; freeze by pinning a commit/tag for release
       path: bootloader/mcuboot
 
 
