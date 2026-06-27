@@ -528,9 +528,18 @@ static void udc_hpm_isr(const struct device *dev)
 
 		if (edpt_setup_status) {
 			/*------------- Set up Received -------------*/
-			usb_device_clear_setup_status(handle, edpt_setup_status);
 			dcd_qhd_t *qhd0 = usb_device_qhd_get(handle, 0);
-			udc_hpm_handler_setup(dev, (struct usb_setup_packet *)&qhd0->setup_request);
+			struct usb_setup_packet setup;
+
+			/*
+			 * ENDPTSETUPSTAT must be acknowledged after copying the
+			 * setup payload from the queue head. Clearing it first can
+			 * release the setup lockout and leave the software seeing a
+			 * zeroed/stale setup packet.
+			 */
+			memcpy(&setup, (const void *)&qhd0->setup_request, sizeof(setup));
+			usb_device_clear_setup_status(handle, edpt_setup_status);
+			udc_hpm_handler_setup(dev, &setup);
 		}
 	}
 }
