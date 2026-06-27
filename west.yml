@@ -30,7 +30,7 @@ manifest:
     - name: zephyr
       remote: leadjoy            # LeadJoy fork: carries the HS2 usbd patches (multi-HID HS ep, MS OS 0xEE, set_bcd_device)
       repo-path: zephyr
-      revision: port/hpm-complete  # our changes branch; fork main tracks hpmicro/zephyr upstream. Freeze: pin a commit/tag. Base = zsg_v0.7.0
+      revision: leadjoy/hs2-hpm6e00  # LeadJoy HS2-on-HPM6E00 integration branch; freeze by pinning a commit/tag for release
       import:
         name-allowlist:
           - west-commands
@@ -61,7 +61,7 @@ manifest:
     - name: mcuboot
       remote: leadjoy            # LeadJoy fork: carries HS2 MCUboot USB CDC recovery on Zephyr's new USB stack
       repo-path: mcuboot
-      revision: port/hpm-usbd-recovery  # fork branch; freeze by pinning a commit/tag for release
+      revision: leadjoy/hs2-hpm6e00  # LeadJoy HS2-on-HPM6E00 integration branch; freeze by pinning a commit/tag for release
       path: bootloader/mcuboot
 
 
