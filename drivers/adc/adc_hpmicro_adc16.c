@@ -153,6 +153,15 @@ static void hpmicro_adc16_start_channel(const struct device *dev)
 	uint32_t channel_id;
 	uint8_t channel_num = 0;
 
+    /*
+     * channel_config/seq_cfg are stack variables and adc16_init_channel() /
+     * adc16_set_seq_config() write their fields straight into registers:
+     * uninitialized thshdh/thshdl/wdog_int_en/seq_int_en would leak stack
+     * garbage into PRD_THSHD_CFG / INT_EN / SEQ_QUE (random watchdog
+     * thresholds and interrupt enables). The official adc16 sample always
+     * starts from adc16_get_channel_default_config().
+     */
+    adc16_get_channel_default_config(&channel_config);
     channel_config.sample_cycle = config->sample_time;
 	channels = data->channels;
 	while (channels) {
@@ -162,6 +171,7 @@ static void hpmicro_adc16_start_channel(const struct device *dev)
 		channel_config.ch           = channel_id;
         adc16_init_channel(base, &channel_config);
 		seq_cfg.queue[channel_num].ch = channel_id;
+		seq_cfg.queue[channel_num].seq_int_en = false;
 		LOG_DBG("Starting channel %d", channel_id);
 		channel_num ++;
 	};
