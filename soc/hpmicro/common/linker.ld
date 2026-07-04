@@ -159,12 +159,20 @@ SECTIONS
 		KEEP(*(".openocd_debug.*"))
 
 		/* HPM SoC drivers (adc/dma/gpio/uart) emit their ISRs into a custom
-		 * ".isr" input section (see soc/hpmicro/common/ISR.ld). Nothing else
-		 * collects it under the Zephyr/MCUboot linker layout, so it would
-		 * orphan to address 0 and IRQ_CONNECT() would record a near-NULL
-		 * handler -> jump-to-0 fault on the first such IRQ (ADC was the hit).
+		 * ".isr" input section. When the board provides an ITCM (chosen
+		 * zephyr,itcm), ISR.ld collects .isr into the ITCM output section
+		 * and z_data_copy() copies it at boot (same mechanism as
+		 * .exception.entry.*), so .text must NOT claim the input section
+		 * here first (.text is emitted before the ITCM section, and the
+		 * linker hands input sections to the first match). Without an ITCM
+		 * nothing else collects .isr under the Zephyr/MCUboot linker
+		 * layout, so it would orphan to address 0 and IRQ_CONNECT() would
+		 * record a near-NULL handler -> jump-to-0 fault on the first such
+		 * IRQ (ADC was the hit); keep the flash fallback for that case.
 		 */
+#if !DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_itcm), okay)
 		KEEP(*(.isr))
+#endif
 
 		__text_region_start = .;
 
