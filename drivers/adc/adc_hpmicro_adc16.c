@@ -284,8 +284,21 @@ static int hpmicro_adc16_init(const struct device *dev)
 	adc16_get_default_config(&adc_config);
 
     adc_config.conv_mode      = adc16_conv_mode_sequence;
-    adc_config.adc_clk_div    = 2;
-    adc_config.sel_sync_ahb   = true;
+    /*
+     * RM 71.2.1.1: the convert clock must not exceed 50 MHz at 16-bit
+     * resolution. The controller clock is 200 MHz on this family (AHB0, or
+     * ANA fed from PLL1/4), so divide by 4 like the official adc16 sample.
+     */
+    adc_config.adc_clk_div    = adc16_clock_divider_4;
+    /*
+     * RM 71.4.17 ADC_CFG0[SEL_SYNC_AHB] is only legal when the ADC controller
+     * clock and the DMA bus clock share the same source. Mirror the official
+     * sample: take the synchronous fast path only when the clock mux selects
+     * AHB0. Forcing it with an ANA source makes the seq-DMA bus interface
+     * cross asynchronous clock domains unsynchronized, which intermittently
+     * hangs the AHB bus (whole-system freeze once the DMA stream runs).
+     */
+    adc_config.sel_sync_ahb   = (clock_get_source(config->adc_clock_name) == clk_adc_src_ahb0);
     if (adc_config.conv_mode == adc16_conv_mode_sequence ||
         adc_config.conv_mode == adc16_conv_mode_preemption) {
         adc_config.adc_ahb_en = true;
