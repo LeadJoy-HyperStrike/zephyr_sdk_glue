@@ -104,6 +104,9 @@ static int udc_hpm_ep_feed(const struct device *dev,
 			len = net_buf_tailroom(buf);
 #if defined(CONFIG_NOCACHE_MEMORY)
 			data = (len == 0 ? NULL : udc_hpm_nocache_alloc(len));
+			if (len != 0 && data == NULL) {
+				goto no_mem;
+			}
 #else
 			data = net_buf_tail(buf);
 #endif
@@ -112,6 +115,9 @@ static int udc_hpm_ep_feed(const struct device *dev,
 			len = buf->len;
 #if defined(CONFIG_NOCACHE_MEMORY)
 			data = (len == 0 ? NULL : udc_hpm_nocache_alloc(len));
+			if (len != 0 && data == NULL) {
+				goto no_mem;
+			}
 			memcpy(data, buf->data, len);
 #else
 			data = buf->data;
@@ -130,6 +136,19 @@ static int udc_hpm_ep_feed(const struct device *dev,
 	}
 
 	return (status ? 0 : -EIO);
+
+#if defined(CONFIG_NOCACHE_MEMORY)
+no_mem:
+	/*
+	 * Nocache pool exhausted: do NOT hand a NULL buffer to the controller
+	 * (the hardware would DMA to/from address 0) and do not memcpy to NULL.
+	 * Release the busy flag so the endpoint can be fed again later.
+	 */
+	key = irq_lock();
+	udc_ep_set_busy(dev, cfg->addr, false);
+	irq_unlock(key);
+	return -ENOMEM;
+#endif
 }
 
 /* return success if the ep is busy or stalled. */

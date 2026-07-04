@@ -8,5 +8,10 @@ config UDC_HPMICRO
 	default y
 	depends on DT_HAS_HPMICRO_HPM_UDC_ENABLED
 	select HAS_HPMSDK_USB
+	select NOCACHE_MEMORY if ARCH_HAS_NOCACHE_MEMORY_SUPPORT
 	help
 	  Enable support for hpmicro usb device driver.
+	  Transfer buffers are allocated from nocache memory: without
+	  CONFIG_NOCACHE_MEMORY the driver DMAs straight into cached net_buf
+	  data with no cache maintenance, which corrupts transfers on
+	  D-cache-enabled parts.
