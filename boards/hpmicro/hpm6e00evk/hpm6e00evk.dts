@@ -71,13 +71,24 @@
 	current-speed = <115200>;
 	pinctrl-0 = <&pinmux_uart0>;
 	pinctrl-names = "default";
-	uart-idle-trgm-reg = <0xF022C000>;
-	uart-idle-trgm-pin = <115>;
-	uart-idle-trgm-input-src = <0x0B>;
-	uart-idle-trgm-output-gptmr-in = <0x38>;
-	uart-idle-trgm-output-gptmr-sync = <0x37>;
-	uart-idle-gptmr-reg = <0xF3010000>;
-	uart-idle-gptmr-clock-name = <18743311>;
+	/*
+	 * UART-idle detection plumbing, consumed only by CONFIG_UART_ASYNC_API
+	 * (not enabled by this product). The register bases and the GPTMR clock
+	 * id below are fixed for HPM6E80 -- the previous values were HPM6750
+	 * leftovers (TRGM2/GPTMR4 bases, garbled clock id). The four TRGM
+	 * routing numbers are still HPM6750 values: on HPM6E80 output 0x37/0x38
+	 * are ADCX_PTRGI1A/1B (ADC preemption triggers!), and the real GPTMR4
+	 * targets are IN2=0x74 / IN3=0x75 / SYNCI=0x76 (hpm_trgmmux_src.h).
+	 * Redesign the whole route against the HPM6E80 TRGM0 tables before
+	 * enabling the async API on this board.
+	 */
+	uart-idle-trgm-reg = <0xF047C000>;     /* HPM_TRGM0_BASE (only TRGM on HPM6E80) */
+	uart-idle-trgm-pin = <115>;            /* HPM6750 leftover, see note above */
+	uart-idle-trgm-input-src = <0x0B>;     /* HPM6750 leftover, see note above */
+	uart-idle-trgm-output-gptmr-in = <0x38>;   /* HPM6750 leftover, see note above */
+	uart-idle-trgm-output-gptmr-sync = <0x37>; /* HPM6750 leftover, see note above */
+	uart-idle-gptmr-reg = <0xF0010000>;    /* HPM_GPTMR4_BASE */
+	uart-idle-gptmr-clock-name = <17629197>; /* CLOCK_GPTMR4 (dt-bindings hpm6e80-clocks.h) */
 	dmas = <&hdma 0 8>, <&hdma 1 9>;
 	dma-names = "rx", "tx";
 };

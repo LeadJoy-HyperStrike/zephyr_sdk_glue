@@ -410,7 +410,7 @@
         pwm0: pwm@f0420000 {
             compatible = "hpmicro,hpm-pwmv2";
             reg = <0xf0420000 DT_SIZE_K(16)>;
-            clocks = <&clk CLOCK_MOT0 CLOCK_AHB0 1>;
+            clocks = <&clk CLOCK_PWM0 CLOCK_AHB0 1>;
             status = "disabled";
             #pwm-cells = <3>;
         };
@@ -418,7 +418,7 @@
         pwm1: pwm@f0424000 {
             compatible = "hpmicro,hpm-pwmv2";
             reg = <0xf0424000 DT_SIZE_K(16)>;
-            clocks = <&clk CLOCK_MOT0 CLOCK_AHB0 1>;
+            clocks = <&clk CLOCK_PWM1 CLOCK_AHB0 1>;
             status = "disabled";
             #pwm-cells = <3>;
         };
@@ -426,7 +426,7 @@
         pwm2: pwm@f0428000 {
             compatible = "hpmicro,hpm-pwmv2";
             reg = <0xf0428000 DT_SIZE_K(16)>;
-            clocks = <&clk CLOCK_MOT0 CLOCK_AHB0 1>;
+            clocks = <&clk CLOCK_PWM2 CLOCK_AHB0 1>;
             status = "disabled";
             #pwm-cells = <3>;
         };
@@ -434,7 +434,7 @@
         pwm3: pwm@f042c000 {
             compatible = "hpmicro,hpm-pwmv2";
             reg = <0xf042c000 DT_SIZE_K(16)>;
-            clocks = <&clk CLOCK_MOT0 CLOCK_AHB0 1>;
+            clocks = <&clk CLOCK_PWM3 CLOCK_AHB0 1>;
             status = "disabled";
             #pwm-cells = <3>;
         };
@@ -557,7 +557,7 @@
             #dma-cells = <2>;
             compatible = "hpmicro,hpm-dmav2";
             dma-channels = <8>;
-            dma-requests = <116>;
+            dma-requests = <120>; /* hpm_dmamux_src.h: 0x00..0x77 */
             reg = <0xf00c8000 DT_SIZE_K(16)>,
                 <0xf00c4000 DT_SIZE_K(16)>; /* DMAMUX base */
             interrupts = <56 1>;
@@ -569,7 +569,7 @@
             #dma-cells = <2>;
             compatible = "hpmicro,hpm-dmav2";
             dma-channels = <8>;
-            dma-requests = <116>;
+            dma-requests = <120>; /* hpm_dmamux_src.h: 0x00..0x77 */
             reg = <0xf3100000 DT_SIZE_K(16)>,
                 <0xf00c4000 DT_SIZE_K(16)>; /* DMAMUX base */
             interrupts = <140 1>;
@@ -577,8 +577,14 @@
             status = "disabled";
         };
 
+        /*
+         * All four ADC instances on the HPM6E00 family are 16-bit ADC16
+         * blocks (UM V0.8 ch.70; the SoC has no ADC12 peripheral and no
+         * hpm_adc12_regs.h). The previous hpm-adc12 compatibles were
+         * HPM67xx leftovers.
+         */
         adc0: adc@f0100000 {
-            compatible = "hpmicro,hpm-adc12";
+            compatible = "hpmicro,hpm-adc16";
             reg = <0xf0100000 DT_SIZE_K(16)>;
             interrupts = <58 1>;
             interrupt-parent = <&plic>;
@@ -589,7 +595,7 @@
         };
 
         adc1: adc@f0104000 {
-            compatible = "hpmicro,hpm-adc12";
+            compatible = "hpmicro,hpm-adc16";
             reg = <0xf0104000 DT_SIZE_K(16)>;
             interrupts = <59 1>;
             interrupt-parent = <&plic>;
@@ -600,7 +606,7 @@
         };
 
         adc2: adc@f0108000 {
-            compatible = "hpmicro,hpm-adc12";
+            compatible = "hpmicro,hpm-adc16";
             reg = <0xf0108000 DT_SIZE_K(16)>;
             interrupts = <60 1>;
             interrupt-parent = <&plic>;
