@@ -18,6 +18,7 @@
 
 #include "../udc/udc_common.h"
 #include "hpm_clock_drv.h"
+#include "hpm_misc.h"
 #include "hpm_usb_device.h"
 
 #include <zephyr/logging/log.h>
@@ -159,22 +160,75 @@ void udc_hpm_fastpath_release(const struct device *dev, uint8_t ep_addr)
 	irq_unlock(key);
 }
 
+/*
+ * Register-level single-qTD arm, ITCM-resident. Mirrors what
+ * usb_device_edpt_xfer() does for the <=16 KB single-descriptor case, but
+ * with none of the XIP-flash call chain: the phase-locked prime runs inside
+ * a ~15 us pre-token window and I-cache misses on the HAL path measured
+ * ~38 us (observed on HW), blowing the window every frame.
+ */
+__attribute__((section(".isr")))
 int udc_hpm_fastpath_arm(const struct device *dev, uint8_t ep_addr,
 			 uint8_t *buf, uint16_t len)
 {
 	struct udc_hpm_data *priv = udc_get_private(dev);
+	usb_device_handle_t *handle = &priv->handle;
+	uint8_t const epnum = ep_addr & 0x0Fu;
+	uint8_t const ep_idx = (uint8_t)(2u * epnum + 1u); /* IN */
+	dcd_qhd_t *qhd;
+	dcd_qtd_t *qtd;
+	uint32_t sys_buf;
+	uint32_t tmp;
 
 	if (fastpath.suppressed || fastpath.ep_addr != ep_addr) {
 		return -EACCES;
 	}
-	return usb_device_edpt_xfer(&priv->handle, ep_addr, buf, len) ? 0
-								      : -EIO;
+
+	sys_buf = core_local_mem_to_sys_address(0, (uint32_t)buf);
+	qhd = &handle->dcd_data->qhd[ep_idx];
+	qtd = &handle->dcd_data->qtd[ep_idx * USB_SOC_DCD_QTD_COUNT_EACH_ENDPOINT];
+
+	/* usb_qtd_init(), inlined */
+	qtd->token = 0;
+	qtd->next = USB_SOC_DCD_QTD_NEXT_INVALID;
+	qtd->active = 1;
+	qtd->total_bytes = qtd->expected_bytes = len;
+	qtd->int_on_complete = true;
+	qtd->buffer[0] = sys_buf;
+	tmp = sys_buf & 0xFFFFF000UL;
+	for (uint8_t i = 1; i < USB_SOC_DCD_QHD_BUFFER_COUNT; i++) {
+		tmp += 0x1000UL;
+		qtd->buffer[i] = tmp;
+	}
+
+	qhd->attached_buffer = sys_buf;
+	qhd->attached_qtd = qtd;
+	qhd->qtd_overlay.next = core_local_mem_to_sys_address(0, (uint32_t)qtd);
+	qhd->qtd_overlay.halted = 0;
+	qhd->qtd_overlay.active = 0;
+
+	handle->regs->ENDPTPRIME = HPM_BITSMASK(1, epnum) << 16;
+	return 0;
 }
 
 bool udc_hpm_fastpath_suppressed(const struct device *dev)
 {
 	ARG_UNUSED(dev);
 	return fastpath.suppressed;
+}
+
+__attribute__((section(".isr")))
+bool udc_hpm_fastpath_ep_primed(const struct device *dev, uint8_t ep_addr)
+{
+	struct udc_hpm_data *priv = udc_get_private(dev);
+	USB_Type *regs = priv->handle.regs;
+	uint32_t bit = HPM_BITSMASK(1, ep_addr & 0x0F)
+		       << ((ep_addr & 0x80u) ? 16 : 0);
+
+	/* A transfer is pending if the endpoint is primed (ETBR/ERBR) or the
+	 * prime request is still latching (ENDPTPRIME).
+	 */
+	return ((regs->ENDPTSTAT | regs->ENDPTPRIME) & bit) != 0u;
 }
 #endif /* CONFIG_UDC_HPM_FASTPATH */
 

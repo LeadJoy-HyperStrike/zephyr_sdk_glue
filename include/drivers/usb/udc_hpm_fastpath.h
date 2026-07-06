@@ -49,4 +49,9 @@ int udc_hpm_fastpath_arm(const struct device *dev, uint8_t ep_addr,
 
 bool udc_hpm_fastpath_suppressed(const struct device *dev);
 
+/* True while a transfer is primed/latching on the endpoint. The owner uses
+ * this to keep the single-in-flight invariant: never arm on a primed EP.
+ */
+bool udc_hpm_fastpath_ep_primed(const struct device *dev, uint8_t ep_addr);
+
 #endif /* SDK_GLUE_INCLUDE_DRIVERS_USB_UDC_HPM_FASTPATH_H_ */
