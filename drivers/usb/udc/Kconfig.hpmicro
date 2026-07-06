@@ -24,3 +24,15 @@ config UDC_HPM_LATENCY_HOOK
 	  Timestamp udc_hpm_isr() entry with the mcycle CSR and call the weak
 	  hs2_udc_lat_completion() hook for every completed endpoint. Read-only
 	  diagnostics; adds ~20 cycles per completion.
+
+config UDC_HPM_FASTPATH
+	bool "HS2 single-endpoint IN fast path (direct ISR completion)"
+	default n
+	depends on UDC_HPMICRO
+	select UDC_HPM_LATENCY_HOOK
+	help
+	  Allow the application to claim one IN endpoint whose completions are
+	  delivered directly from the UDC ISR (with an mcycle timestamp) and
+	  which is re-armed by a register-level prime, bypassing the usbd
+	  thread and class layer. Used by the HS2 8 kHz phase-locked gamepad
+	  stream.

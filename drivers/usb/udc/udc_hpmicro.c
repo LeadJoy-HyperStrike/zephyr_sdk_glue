@@ -108,6 +108,76 @@ __weak void hs2_udc_lat_prime_ready(uint8_t ep_addr, uint32_t delta,
 }
 #endif
 
+#if defined(CONFIG_UDC_HPM_FASTPATH)
+#include <drivers/usb/udc_hpm_fastpath.h>
+
+/* One claimable endpoint; HPM6E00 exposes a single UDC instance. */
+static struct {
+	uint8_t ep_addr; /* 0 = unclaimed */
+	udc_hpm_fastpath_cb_t cb;
+	void *ctx;
+	volatile bool suppressed;
+} fastpath;
+
+int udc_hpm_fastpath_claim(const struct device *dev, uint8_t ep_addr,
+			   udc_hpm_fastpath_cb_t cb, void *ctx)
+{
+	unsigned int key;
+
+	key = irq_lock();
+	if (fastpath.ep_addr != 0u && fastpath.ep_addr != ep_addr) {
+		irq_unlock(key);
+		return -EALREADY;
+	}
+	if (udc_ep_is_busy(dev, ep_addr)) {
+		/* A class-layer transfer is still in flight; taking over now
+		 * would strand its net_buf. Caller retries after the next
+		 * completion.
+		 */
+		irq_unlock(key);
+		return -EBUSY;
+	}
+	fastpath.ep_addr = ep_addr;
+	fastpath.cb = cb;
+	fastpath.ctx = ctx;
+	fastpath.suppressed = false;
+	irq_unlock(key);
+	return 0;
+}
+
+void udc_hpm_fastpath_release(const struct device *dev, uint8_t ep_addr)
+{
+	unsigned int key;
+
+	ARG_UNUSED(dev);
+	key = irq_lock();
+	if (fastpath.ep_addr == ep_addr) {
+		fastpath.ep_addr = 0u;
+		fastpath.cb = NULL;
+		fastpath.ctx = NULL;
+	}
+	irq_unlock(key);
+}
+
+int udc_hpm_fastpath_arm(const struct device *dev, uint8_t ep_addr,
+			 uint8_t *buf, uint16_t len)
+{
+	struct udc_hpm_data *priv = udc_get_private(dev);
+
+	if (fastpath.suppressed || fastpath.ep_addr != ep_addr) {
+		return -EACCES;
+	}
+	return usb_device_edpt_xfer(&priv->handle, ep_addr, buf, len) ? 0
+								      : -EIO;
+}
+
+bool udc_hpm_fastpath_suppressed(const struct device *dev)
+{
+	ARG_UNUSED(dev);
+	return fastpath.suppressed;
+}
+#endif /* CONFIG_UDC_HPM_FASTPATH */
+
 /* If ep is busy, return busy. Otherwise feed the buf to controller */
 static int udc_hpm_ep_feed(const struct device *dev,
 			struct udc_ep_config *const cfg,
@@ -507,6 +577,14 @@ static void udc_hpm_isr(const struct device *dev)
 
 	if (int_status & USB_USBINTR_URE_MASK) {
 		struct udc_ep_config *cfg;
+#if defined(CONFIG_UDC_HPM_FASTPATH)
+		/* Hardware EP state dies here; the deferred UDC_EVT_RESET
+		 * reaches the app much later via the usbd thread. Suppress
+		 * the fast path synchronously so its timer/completion chain
+		 * stops arming a torn-down endpoint.
+		 */
+		fastpath.suppressed = true;
+#endif
 		usb_device_bus_reset(handle, USB_HPM_EP0_SIZE);
 		cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
 		if (cfg->stat.enabled) {
@@ -545,6 +623,9 @@ static void udc_hpm_isr(const struct device *dev)
 
 	if (int_status & USB_USBINTR_PCE_MASK) {
 		if (!usb_device_get_port_ccs(handle)) {
+#if defined(CONFIG_UDC_HPM_FASTPATH)
+			fastpath.suppressed = true;
+#endif
 			udc_submit_event(dev, UDC_EVT_VBUS_REMOVED, 0);
 		} else {
 			udc_set_suspended(dev, false);
@@ -590,6 +671,13 @@ static void udc_hpm_isr(const struct device *dev)
 						uint8_t const ep_addr = (ep_idx / 2) | ((ep_idx & 0x01) ? 0x80 : 0);
 #if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
 						hs2_udc_lat_completion(ep_addr, isr_cycle);
+#endif
+#if defined(CONFIG_UDC_HPM_FASTPATH)
+						if (ep_addr == fastpath.ep_addr &&
+						    fastpath.cb != NULL) {
+							fastpath.cb(ep_addr, isr_cycle,
+								    fastpath.ctx);
+						} else
 #endif
 						if (ep_addr & 0x80) {
 							udc_hpm_handler_in(dev, ep_addr, (uint8_t *)p_qhd->attached_buffer, transfer_len);
@@ -645,6 +733,12 @@ static int udc_hpm_ep_enqueue(const struct device *dev,
 			struct udc_ep_config *const cfg,
 			struct net_buf *const buf)
 {
+#if defined(CONFIG_UDC_HPM_FASTPATH)
+	if (cfg->addr == fastpath.ep_addr) {
+		LOG_WRN("enqueue on fastpath-claimed ep 0x%02x", cfg->addr);
+		return -EACCES;
+	}
+#endif
 	udc_buf_put(cfg, buf);
 	if (cfg->stat.halted) {
 		LOG_DBG("ep 0x%02x halted", cfg->addr);
