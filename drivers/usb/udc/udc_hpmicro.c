@@ -434,6 +434,23 @@ static int udc_hpm_handler_in(const struct device *dev, uint8_t ep,
 	return err;
 }
 
+#if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
+static inline uint32_t udc_hpm_cycle_now(void)
+{
+	uint32_t v;
+
+	__asm__ volatile("csrr %0, mcycle" : "=r"(v));
+	return v;
+}
+
+/* Overridden by the app's latency diagnostics / stream module. */
+__weak void hs2_udc_lat_completion(uint8_t ep_addr, uint32_t isr_cycle)
+{
+	ARG_UNUSED(ep_addr);
+	ARG_UNUSED(isr_cycle);
+}
+#endif
+
 static void udc_hpm_isr(const struct device *dev)
 {
 	struct udc_hpm_data *priv = udc_get_private(dev);
@@ -441,6 +458,9 @@ static void udc_hpm_isr(const struct device *dev)
 	uint32_t int_status;
 	uint32_t transfer_len;
 	bool ep_cb_req;
+#if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
+	uint32_t isr_cycle = udc_hpm_cycle_now();
+#endif
 
 	/* Acknowledge handled interrupt */
 	int_status = usb_device_status_flags(handle);
@@ -535,6 +555,9 @@ static void udc_hpm_isr(const struct device *dev)
 					
 					if (ep_cb_req) {
 						uint8_t const ep_addr = (ep_idx / 2) | ((ep_idx & 0x01) ? 0x80 : 0);
+#if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
+						hs2_udc_lat_completion(ep_addr, isr_cycle);
+#endif
 						if (ep_addr & 0x80) {
 							udc_hpm_handler_in(dev, ep_addr, (uint8_t *)p_qhd->attached_buffer, transfer_len);
 						} else {

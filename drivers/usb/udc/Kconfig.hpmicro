@@ -15,3 +15,12 @@ config UDC_HPMICRO
 	  CONFIG_NOCACHE_MEMORY the driver DMAs straight into cached net_buf
 	  data with no cache maintenance, which corrupts transfers on
 	  D-cache-enabled parts.
+
+config UDC_HPM_LATENCY_HOOK
+	bool "HS2 latency instrumentation hook in the UDC ISR"
+	default n
+	depends on UDC_HPMICRO
+	help
+	  Timestamp udc_hpm_isr() entry with the mcycle CSR and call the weak
+	  hs2_udc_lat_completion() hook for every completed endpoint. Read-only
+	  diagnostics; adds ~20 cycles per completion.
