@@ -83,6 +83,31 @@ static inline uint8_t ep_idx2bit(uint8_t ep_idx)
 	return ep_idx / 2 + ((ep_idx % 2) ? 16 : 0);
 }
 
+#if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
+static inline uint32_t udc_hpm_cycle_now(void)
+{
+	uint32_t v;
+
+	__asm__ volatile("csrr %0, mcycle" : "=r"(v));
+	return v;
+}
+
+/* Overridden by the app's latency diagnostics / stream module. */
+__weak void hs2_udc_lat_completion(uint8_t ep_addr, uint32_t isr_cycle)
+{
+	ARG_UNUSED(ep_addr);
+	ARG_UNUSED(isr_cycle);
+}
+
+__weak void hs2_udc_lat_prime_ready(uint8_t ep_addr, uint32_t delta,
+				    bool timeout)
+{
+	ARG_UNUSED(ep_addr);
+	ARG_UNUSED(delta);
+	ARG_UNUSED(timeout);
+}
+#endif
+
 /* If ep is busy, return busy. Otherwise feed the buf to controller */
 static int udc_hpm_ep_feed(const struct device *dev,
 			struct udc_ep_config *const cfg,
@@ -123,6 +148,31 @@ static int udc_hpm_ep_feed(const struct device *dev,
 			data = buf->data;
 #endif
 			status = usb_device_edpt_xfer(handle, cfg->addr, data, len);
+#if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
+			if (status) {
+				USB_Type *regs = handle->regs;
+				uint32_t bit = HPM_BITSMASK(1, cfg->addr & 0x0F)
+					       << 16;
+				uint32_t t0 = udc_hpm_cycle_now();
+				int spins = 0;
+
+				/*
+				 * Phase 0 diagnostic only: ETBR set = payload
+				 * snapshotted into the controller (RM
+				 * ENDPTSTAT). Bounded poll; a completion
+				 * racing in can clear ETBR early and inflate
+				 * the sample toward the timeout - consumers
+				 * use min/avg.
+				 */
+				while ((regs->ENDPTSTAT & bit) == 0u &&
+				       spins < 2000) {
+					spins++;
+				}
+				hs2_udc_lat_prime_ready(cfg->addr,
+							udc_hpm_cycle_now() - t0,
+							spins >= 2000);
+			}
+#endif
 		}
 
 		key = irq_lock();
@@ -433,23 +483,6 @@ static int udc_hpm_handler_in(const struct device *dev, uint8_t ep,
 
 	return err;
 }
-
-#if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
-static inline uint32_t udc_hpm_cycle_now(void)
-{
-	uint32_t v;
-
-	__asm__ volatile("csrr %0, mcycle" : "=r"(v));
-	return v;
-}
-
-/* Overridden by the app's latency diagnostics / stream module. */
-__weak void hs2_udc_lat_completion(uint8_t ep_addr, uint32_t isr_cycle)
-{
-	ARG_UNUSED(ep_addr);
-	ARG_UNUSED(isr_cycle);
-}
-#endif
 
 static void udc_hpm_isr(const struct device *dev)
 {
