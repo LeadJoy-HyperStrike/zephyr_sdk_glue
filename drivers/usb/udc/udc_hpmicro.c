@@ -118,6 +118,10 @@ static struct {
 	udc_hpm_fastpath_cb_t cb;
 	void *ctx;
 	volatile bool suppressed;
+	/* ENDPTCOMPLETE bits this ISR must neither process nor W1C-clear:
+	 * the CPU1 engine polls and consumes them (exclusive owner while
+	 * masked). Kept as a ready-made register mask, not an EP number. */
+	volatile uint32_t masked_complete;
 } fastpath;
 
 int udc_hpm_fastpath_claim(const struct device *dev, uint8_t ep_addr,
@@ -209,6 +213,44 @@ int udc_hpm_fastpath_arm(const struct device *dev, uint8_t ep_addr,
 
 	handle->regs->ENDPTPRIME = HPM_BITSMASK(1, epnum) << 16;
 	return 0;
+}
+
+int udc_hpm_fastpath_export(const struct device *dev, uint8_t ep_addr,
+			    uint32_t *qhd_addr, uint32_t *qtd_addr,
+			    uint32_t *regs_addr)
+{
+	struct udc_hpm_data *priv = udc_get_private(dev);
+	usb_device_handle_t *handle = &priv->handle;
+	uint8_t const epnum = ep_addr & 0x0Fu;
+	uint8_t const ep_idx = (uint8_t)(2u * epnum + 1u); /* IN */
+
+	if (qhd_addr == NULL || qtd_addr == NULL || regs_addr == NULL) {
+		return -EINVAL;
+	}
+	*qhd_addr = core_local_mem_to_sys_address(
+		0, (uint32_t)&handle->dcd_data->qhd[ep_idx]);
+	*qtd_addr = core_local_mem_to_sys_address(
+		0, (uint32_t)&handle->dcd_data
+			   ->qtd[ep_idx * USB_SOC_DCD_QTD_COUNT_EACH_ENDPOINT]);
+	*regs_addr = (uint32_t)handle->regs;
+	return 0;
+}
+
+void udc_hpm_fastpath_mask_complete(const struct device *dev, uint8_t ep_addr,
+				    bool mask)
+{
+	uint8_t const epnum = ep_addr & 0x0Fu;
+	uint32_t const bit = HPM_BITSMASK(1, epnum) << 16; /* ETCE (IN) */
+	unsigned int key;
+
+	ARG_UNUSED(dev);
+	key = irq_lock();
+	if (mask) {
+		fastpath.masked_complete |= bit;
+	} else {
+		fastpath.masked_complete &= ~bit;
+	}
+	irq_unlock(key);
 }
 
 bool udc_hpm_fastpath_suppressed(const struct device *dev)
@@ -689,9 +731,15 @@ static void udc_hpm_isr(const struct device *dev)
 	}
 
 	if (int_status & USB_USBINTR_UE_MASK) {
-		uint32_t const edpt_complete = usb_device_get_edpt_complete_status(handle);
+		uint32_t edpt_complete = usb_device_get_edpt_complete_status(handle);
 		uint32_t const edpt_setup_status = usb_device_get_setup_status(handle);
 
+#if defined(CONFIG_UDC_HPM_FASTPATH)
+		/* Bits owned by the CPU1 engine: neither processed nor
+		 * cleared here - core1 polls ENDPTCOMPLETE and W1C-clears
+		 * its own bit (RM 64.6.25: per-bit RWC). */
+		edpt_complete &= ~fastpath.masked_complete;
+#endif
 		if (edpt_complete) {
 			usb_device_clear_edpt_complete_status(handle, edpt_complete);
 			for (uint8_t ep_idx = 0; ep_idx < USB_SOS_DCD_MAX_QHD_COUNT; ep_idx++) {

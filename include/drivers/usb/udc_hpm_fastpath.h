@@ -54,4 +54,22 @@ bool udc_hpm_fastpath_suppressed(const struct device *dev);
  */
 bool udc_hpm_fastpath_ep_primed(const struct device *dev, uint8_t ep_addr);
 
+/*
+ * Cross-core handover plumbing (HS2 CPU1 engine).
+ *
+ * udc_hpm_fastpath_export: system addresses of the claimed EP's dQH, its
+ * first qTD slot and the USB controller base - everything the second hart
+ * needs to run the register-level arm flow itself.
+ *
+ * udc_hpm_fastpath_mask_complete: while masked, this driver's ISR neither
+ * processes nor W1C-clears the EP's ENDPTCOMPLETE IN bit; the CPU1 engine
+ * polls and consumes it as the exclusive owner. Unmask before falling back
+ * to the class/fastpath completion path on this core.
+ */
+int udc_hpm_fastpath_export(const struct device *dev, uint8_t ep_addr,
+			    uint32_t *qhd_addr, uint32_t *qtd_addr,
+			    uint32_t *regs_addr);
+void udc_hpm_fastpath_mask_complete(const struct device *dev, uint8_t ep_addr,
+				    bool mask);
+
 #endif /* SDK_GLUE_INCLUDE_DRIVERS_USB_UDC_HPM_FASTPATH_H_ */
