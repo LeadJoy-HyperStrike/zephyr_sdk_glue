@@ -34,6 +34,16 @@ struct gpio_hpm_data {
 	sys_slist_t callbacks;
 };
 
+/* System address of this port's DI value register (GPIO->DI[port].VALUE).
+ * Exported for the HS2 CPU1 engine, which samples raw button levels with a
+ * bare MMIO read from the second hart. Read-only, side-effect free. */
+uint32_t gpio_hpmicro_di_addr(const struct device *dev)
+{
+	const struct gpio_hpm_config *config = dev->config;
+
+	return (uint32_t)&config->gpio_base->DI[config->port_base].VALUE;
+}
+
 static int gpio_hpm_configure(const struct device *dev,
 				   gpio_pin_t pin, gpio_flags_t flags)
 {
