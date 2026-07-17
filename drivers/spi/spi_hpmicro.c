@@ -61,6 +61,14 @@ struct spi_hpm_data {
 #ifdef CONFIG_SPI_INTERRUPT_DRIVEN
 	uint8_t *tx_buf;
 	uint8_t *rx_buf;
+	/* FIFO units left to pump this packet. The threshold interrupts are
+	 * level conditions (TX: entries <= TXTHRES, RX: entries >= RXTHRES);
+	 * without these bounds the ISR keeps pushing past the buffer end
+	 * until the TX FIFO jams full of overrun bytes and spi_write_data
+	 * times out (one "transfer failed" per packet, wire data unharmed
+	 * only because WRTRANCNT caps what actually shifts out). */
+	size_t tx_remaining;
+	size_t rx_remaining;
 #endif
 #ifdef CONFIG_SPI_HPM_SPI_DMA
 	volatile uint32_t status_flags;
@@ -144,6 +152,8 @@ static void spi_hpm_transfer_next_packet(const struct device *dev)
 #if CONFIG_SPI_INTERRUPT_DRIVEN
 	data->tx_buf = (uint8_t *) ctx->tx_buf;
 	data->rx_buf = (uint8_t *) ctx->rx_buf;
+	data->tx_remaining = tx_size;
+	data->rx_remaining = rx_size;
     stat = spi_control_init(base, &control_config, tx_size, rx_size);
 	if (stat != status_success) {
         LOG_ERR("SPI control init failed");
@@ -157,8 +167,26 @@ static void spi_hpm_transfer_next_packet(const struct device *dev)
 		return;
     }
 
-		/* enable interrupt */
-		spi_enable_interrupt(base, spi_rx_fifo_threshold_int | spi_tx_fifo_threshold_int | spi_end_int);
+	/* FIFO thresholds, per the SDK interrupt sample (samples/drivers/spi/
+	 * interrupt/master): TX refills whenever the FIFO is not full (keeps
+	 * SCLK continuous), RX drains per entry. The reset-default thresholds
+	 * are 0, which makes the RX condition (entries >= RXTHRES) permanently
+	 * true and storms the ISR on write-only transfers. */
+	spi_set_tx_fifo_threshold(base, SPI_SOC_FIFO_DEPTH - 1U);
+	spi_set_rx_fifo_threshold(base, 1U);
+
+	/* enable end int + only the FIFO directions this packet uses */
+	{
+		uint32_t irq_mask = spi_end_int;
+
+		if (rx_size > 0) {
+			irq_mask |= spi_rx_fifo_threshold_int;
+		}
+		if (tx_size > 0) {
+			irq_mask |= spi_tx_fifo_threshold_int;
+		}
+		spi_enable_interrupt(base, irq_mask);
+	}
 #else
 	stat = spi_transfer(base, &control_config, NULL, NULL,
                 (uint8_t *)tx_data, tx_size, (uint8_t *)rx_data, rx_size);
@@ -192,28 +220,56 @@ __attribute__((section(".isr")))static void spi_hpm_isr(const struct device *dev
 		spi_clear_interrupt_status(base, spi_end_int);
 #ifdef CONFIG_SPI_INTERRUPT_DRIVEN
 	} else if (irq_status & (spi_rx_fifo_threshold_int | spi_tx_fifo_threshold_int)) {
+		/* Per-direction pump with explicit bounds (the SDK interrupt
+		 * sample's sent_count/receive_count pattern): the threshold
+		 * interrupts are level conditions, so each direction must stop
+		 * itself once its packet quota is done - the interrupt fires
+		 * again for FIFO states the transfer no longer cares about. */
 		data_len_in_bytes = spi_get_data_length_in_bytes(base);
-		if(data->control_config.common_config.trans_mode == spi_trans_read_only) {
-			stat = spi_read_data(base, data_len_in_bytes, data->rx_buf, 1);
-			(data->rx_buf)++;
-		} else if (data->control_config.common_config.trans_mode == spi_trans_write_only) {
-			stat = spi_write_data(base, data_len_in_bytes, data->tx_buf, 1);
-			(data->tx_buf)++;
-		} else if (data->control_config.common_config.trans_mode == spi_trans_write_read_together) {
-			stat = spi_write_read_data(base, data_len_in_bytes, data->tx_buf, 1, data->rx_buf, 1);
-			(data->tx_buf)++;
-			(data->rx_buf)++;
-		} else {
-			LOG_ERR("Unsupported transfer mode");
-			return;
+
+		if (irq_status & spi_rx_fifo_threshold_int) {
+			if (data->rx_remaining > 0 && data->rx_buf != NULL) {
+				stat = spi_read_data(base, data_len_in_bytes,
+						     data->rx_buf, 1);
+				if (stat == status_success) {
+					data->rx_buf += data_len_in_bytes;
+					data->rx_remaining--;
+					if (data->rx_remaining == 0) {
+						spi_disable_interrupt(base,
+							spi_rx_fifo_threshold_int);
+					}
+				} else {
+					LOG_ERR("spi rx failed");
+				}
+			} else {
+				spi_disable_interrupt(base,
+						      spi_rx_fifo_threshold_int);
+			}
+			spi_clear_interrupt_status(base,
+						   spi_rx_fifo_threshold_int);
 		}
 
-		if (stat != status_success) {
-			LOG_ERR("transfer failed");
-			return;
+		if (irq_status & spi_tx_fifo_threshold_int) {
+			if (data->tx_remaining > 0 && data->tx_buf != NULL) {
+				stat = spi_write_data(base, data_len_in_bytes,
+						      data->tx_buf, 1);
+				if (stat == status_success) {
+					data->tx_buf += data_len_in_bytes;
+					data->tx_remaining--;
+					if (data->tx_remaining == 0) {
+						spi_disable_interrupt(base,
+							spi_tx_fifo_threshold_int);
+					}
+				} else {
+					LOG_ERR("spi tx failed");
+				}
+			} else {
+				spi_disable_interrupt(base,
+						      spi_tx_fifo_threshold_int);
+			}
+			spi_clear_interrupt_status(base,
+						   spi_tx_fifo_threshold_int);
 		}
-
-		spi_clear_interrupt_status(base, spi_rx_fifo_threshold_int | spi_tx_fifo_threshold_int);
 #endif
 	}
 }
