@@ -160,13 +160,6 @@ static void spi_hpm_transfer_next_packet(const struct device *dev)
 		return;
     }
 
-	/* command phase, write cmd to start transfer */
-    stat = spi_write_command(base, spi_master_mode, &control_config, NULL);
-    if (stat != status_success) {
-        LOG_ERR("SPI write command failed");
-		return;
-    }
-
 	/* FIFO thresholds, per the SDK interrupt sample (samples/drivers/spi/
 	 * interrupt/master): TX refills whenever the FIFO is not full (keeps
 	 * SCLK continuous), RX drains per entry. The reset-default thresholds
@@ -187,6 +180,20 @@ static void spi_hpm_transfer_next_packet(const struct device *dev)
 		}
 		spi_enable_interrupt(base, irq_mask);
 	}
+
+	/* Command phase LAST: spi_write_command() is what starts the
+	 * transfer, and the SDK interrupt sample arms thresholds and
+	 * interrupts before it (samples/drivers/spi/interrupt/master).
+	 * Starting first meant the leading TX bytes were clocked out as
+	 * FIFO-underflow zeros before the ISR pump was armed - the first
+	 * SPI_HOLD-less read user (BMI423 bring-up) saw its command byte
+	 * never reach the wire.
+	 */
+    stat = spi_write_command(base, spi_master_mode, &control_config, NULL);
+    if (stat != status_success) {
+        LOG_ERR("SPI write command failed");
+		return;
+    }
 #else
 	stat = spi_transfer(base, &control_config, NULL, NULL,
                 (uint8_t *)tx_data, tx_size, (uint8_t *)rx_data, rx_size);
@@ -215,6 +222,26 @@ __attribute__((section(".isr")))static void spi_hpm_isr(const struct device *dev
 	irq_status = spi_get_interrupt_status(base);
 
 	if (irq_status & spi_end_int) {
+#ifdef CONFIG_SPI_INTERRUPT_DRIVEN
+		/* The end interrupt can coincide with the last rx-threshold
+		 * condition (the SDK sample handles end/rx/tx as parallel ifs,
+		 * not else-if). Drain what the pump has not consumed before
+		 * declaring completion, or the rx tail is silently dropped
+		 * (first seen as a one-byte-short read on BMI423 bring-up).
+		 */
+		data_len_in_bytes = spi_get_data_length_in_bytes(base);
+		while (data->rx_remaining > 0 && data->rx_buf != NULL &&
+		       spi_get_rx_fifo_valid_data_size(base) > 0) {
+			stat = spi_read_data(base, data_len_in_bytes,
+					     data->rx_buf, 1);
+			if (stat != status_success) {
+				LOG_ERR("spi rx drain failed");
+				break;
+			}
+			data->rx_buf += data_len_in_bytes;
+			data->rx_remaining--;
+		}
+#endif
 		spi_disable_interrupt(base, spi_end_int | spi_rx_fifo_threshold_int | spi_tx_fifo_threshold_int);
 		spi_hpm_master_transfer_callback(base, data);
 		spi_clear_interrupt_status(base, spi_end_int);
