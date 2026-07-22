@@ -49,6 +49,19 @@ int udc_hpm_fastpath_arm(const struct device *dev, uint8_t ep_addr,
 
 bool udc_hpm_fastpath_suppressed(const struct device *dev);
 
+/*
+ * Invoked from the UDC ISR on bus-death edges (bus reset, VBUS removed),
+ * BEFORE the hardware endpoint flush. Runs in ISR context: keep it to a
+ * few stores. Purpose: let the app revoke the CPU1 engine's stream
+ * ownership synchronously instead of waiting for the usbd-thread class
+ * disable - the ms-wide gap in between is the window where the engine's
+ * cold-start branch re-primes a flushed, disabled endpoint and plants a
+ * permanent zombie ENDPTSTAT/ENDPTPRIME bit (2026-07-22 replug wedge).
+ */
+typedef void (*udc_hpm_fastpath_bus_cb_t)(void *ctx);
+void udc_hpm_fastpath_set_bus_cb(const struct device *dev,
+				 udc_hpm_fastpath_bus_cb_t cb, void *ctx);
+
 /* True while a transfer is primed/latching on the endpoint. The owner uses
  * this to keep the single-in-flight invariant: never arm on a primed EP.
  */

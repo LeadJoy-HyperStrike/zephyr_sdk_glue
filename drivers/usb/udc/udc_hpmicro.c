@@ -122,6 +122,10 @@ static struct {
 	 * the CPU1 engine polls and consumes them (exclusive owner while
 	 * masked). Kept as a ready-made register mask, not an EP number. */
 	volatile uint32_t masked_complete;
+	/* Bus-death notification (see udc_hpm_fastpath.h): called from the
+	 * URE/VBUS-removed ISR branches before the endpoint flush. */
+	volatile udc_hpm_fastpath_bus_cb_t bus_cb;
+	void *bus_ctx;
 } fastpath;
 
 int udc_hpm_fastpath_claim(const struct device *dev, uint8_t ep_addr,
@@ -148,6 +152,18 @@ int udc_hpm_fastpath_claim(const struct device *dev, uint8_t ep_addr,
 	fastpath.suppressed = false;
 	irq_unlock(key);
 	return 0;
+}
+
+void udc_hpm_fastpath_set_bus_cb(const struct device *dev,
+				 udc_hpm_fastpath_bus_cb_t cb, void *ctx)
+{
+	unsigned int key;
+
+	ARG_UNUSED(dev);
+	key = irq_lock();
+	fastpath.bus_ctx = ctx;
+	fastpath.bus_cb = cb;
+	irq_unlock(key);
 }
 
 void udc_hpm_fastpath_release(const struct device *dev, uint8_t ep_addr)
@@ -680,6 +696,9 @@ static void udc_hpm_isr(const struct device *dev)
 		 * stops arming a torn-down endpoint.
 		 */
 		fastpath.suppressed = true;
+		if (fastpath.bus_cb != NULL) {
+			fastpath.bus_cb(fastpath.bus_ctx);
+		}
 #endif
 		usb_device_bus_reset(handle, USB_HPM_EP0_SIZE);
 		cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
@@ -721,6 +740,9 @@ static void udc_hpm_isr(const struct device *dev)
 		if (!usb_device_get_port_ccs(handle)) {
 #if defined(CONFIG_UDC_HPM_FASTPATH)
 			fastpath.suppressed = true;
+			if (fastpath.bus_cb != NULL) {
+				fastpath.bus_cb(fastpath.bus_ctx);
+			}
 #endif
 			udc_submit_event(dev, UDC_EVT_VBUS_REMOVED, 0);
 		} else {
