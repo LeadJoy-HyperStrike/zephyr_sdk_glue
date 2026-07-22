@@ -67,6 +67,12 @@ void udc_hpm_fastpath_set_bus_cb(const struct device *dev,
  */
 bool udc_hpm_fastpath_ep_primed(const struct device *dev, uint8_t ep_addr);
 
+/* Flush stale prime/buffer-ready state off the endpoint (thread context;
+ * also runs implicitly inside udc_hpm_fastpath_claim). Returns 0 when the
+ * endpoint reads clean, -EIO if a prime/stat bit survived the flush dance.
+ */
+int udc_hpm_fastpath_reconcile(const struct device *dev, uint8_t ep_addr);
+
 /*
  * Cross-core handover plumbing (HS2 CPU1 engine).
  *

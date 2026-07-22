@@ -128,9 +128,42 @@ static struct {
 	void *bus_ctx;
 } fastpath;
 
+/* Flush stale prime/buffer-ready state off the (IN) endpoint before the
+ * fast path takes ownership. RM V0.8: ENDPTFLUSH FETB is W1S and
+ * hardware-cleared on completion (64.6.23); ENDPTSTAT ETBR is cleared
+ * only by USB reset, the DMA system, or ENDPTFLUSH, and a
+ * packet-in-progress finishes first - hence the STAT recheck loop
+ * (64.6.24); ENDPTCOMPLETE is RWC (64.6.25). Bounded spins: at claim
+ * time the endpoint is idle, a flush completes within bus-clock cycles.
+ * Zombie source: a prime issued into a flushed/disabled endpoint during
+ * the bus-reset window (2026-07-22 warm-replug wedge).
+ */
+static int fastpath_ep_reconcile(USB_Type *regs, uint8_t epnum)
+{
+	uint32_t const bit = HPM_BITSMASK(1, epnum) << 16; /* IN */
+
+	if (((regs->ENDPTSTAT | regs->ENDPTPRIME) & bit) == 0u) {
+		return 0;
+	}
+	for (int retry = 0; retry < 8; retry++) {
+		int spin = 1000;
+
+		regs->ENDPTFLUSH = bit;
+		while ((regs->ENDPTFLUSH & bit) != 0u && --spin > 0) {
+		}
+		if ((regs->ENDPTSTAT & bit) == 0u) {
+			break;
+		}
+	}
+	regs->ENDPTCOMPLETE = bit; /* W1C any stale completion */
+	return (((regs->ENDPTSTAT | regs->ENDPTPRIME) & bit) != 0u) ? -EIO
+								    : 0;
+}
+
 int udc_hpm_fastpath_claim(const struct device *dev, uint8_t ep_addr,
 			   udc_hpm_fastpath_cb_t cb, void *ctx)
 {
+	struct udc_hpm_data *priv = udc_get_private(dev);
 	unsigned int key;
 
 	key = irq_lock();
@@ -146,12 +179,28 @@ int udc_hpm_fastpath_claim(const struct device *dev, uint8_t ep_addr,
 		irq_unlock(key);
 		return -EBUSY;
 	}
+	if (fastpath_ep_reconcile(priv->handle.regs, ep_addr & 0x0Fu) != 0) {
+		irq_unlock(key);
+		LOG_WRN("fastpath claim: ep 0x%02x stuck primed, claim refused",
+			ep_addr);
+		return -EIO;
+	}
 	fastpath.ep_addr = ep_addr;
 	fastpath.cb = cb;
 	fastpath.ctx = ctx;
 	fastpath.suppressed = false;
 	irq_unlock(key);
 	return 0;
+}
+
+int udc_hpm_fastpath_reconcile(const struct device *dev, uint8_t ep_addr)
+{
+	struct udc_hpm_data *priv = udc_get_private(dev);
+	unsigned int key = irq_lock();
+	int err = fastpath_ep_reconcile(priv->handle.regs, ep_addr & 0x0Fu);
+
+	irq_unlock(key);
+	return err;
 }
 
 void udc_hpm_fastpath_set_bus_cb(const struct device *dev,
