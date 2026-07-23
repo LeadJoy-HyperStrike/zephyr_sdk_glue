@@ -720,12 +720,18 @@
         interrupt-parent = <&plic>;
     };
 
+    /* hpmicro-gpio-port indexes the GPIO DI/DO/OE register arrays. On
+     * HPM6E00 ports V..Z sit at indexes 11..15 (hpm_gpio_regs.h
+     * GPIO_DI_GPIOV..GPIO_DI_GPIOZ), not consecutively after F. The IRQ
+     * numbers ARE consecutive (IRQn_GPIO0_V..Z = 7..11), so only the
+     * port indexes differ from the node ordinal.
+     */
     gpiov: gpio@6 {
         compatible = "hpmicro,hpm-gpio";
         reg = <0x0 DT_SIZE_K(16)>;
         gpio-controller;
         #gpio-cells = <2>;
-        hpmicro-gpio-port = <6>;
+        hpmicro-gpio-port = <11>;
         interrupts = <7 1>;
         interrupt-parent = <&plic>;
     };
@@ -735,7 +741,7 @@
         reg = <0x0 DT_SIZE_K(16)>;
         gpio-controller;
         #gpio-cells = <2>;
-        hpmicro-gpio-port = <7>;
+        hpmicro-gpio-port = <12>;
         interrupts = <8 1>;
         interrupt-parent = <&plic>;
     };
@@ -745,7 +751,7 @@
         reg = <0x0 DT_SIZE_K(16)>;
         gpio-controller;
         #gpio-cells = <2>;
-        hpmicro-gpio-port = <8>;
+        hpmicro-gpio-port = <13>;
         interrupt-parent = <&plic>;
         interrupts = <9 1>;
         status = "disabled";
@@ -756,7 +762,7 @@
         reg = <0x0 DT_SIZE_K(16)>;
         gpio-controller;
         #gpio-cells = <2>;
-        hpmicro-gpio-port = <9>;
+        hpmicro-gpio-port = <14>;
         interrupts = <10 1>;
         interrupt-parent = <&plic>;
         status = "disabled";
@@ -767,7 +773,7 @@
         reg = <0x0 DT_SIZE_K(16)>;
         gpio-controller;
         #gpio-cells = <2>;
-        hpmicro-gpio-port = <10>;
+        hpmicro-gpio-port = <15>;
         interrupts = <11 1>;
         interrupt-parent = <&plic>;
         status = "disabled";
