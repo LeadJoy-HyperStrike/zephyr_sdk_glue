@@ -60,10 +60,21 @@ typedef struct pinctrl_soc_pin pinctrl_soc_pin_t;
 		.pincfg = Z_PINCTRL_HPMICRO_PINCFG_INIT(node_id) \
 	},
 
-#define Z_PINCTRL_STATE_PINS_INIT(node_id, prop)	\
-	{DT_FOREACH_CHILD_VARGS(DT_PHANDLE(node_id, prop),	\
+/* Expand every child group of one state phandle. */
+#define Z_PINCTRL_STATE_PHANDLE_INIT(node_id, prop, idx)	\
+	DT_FOREACH_CHILD_VARGS(DT_PHANDLE_BY_IDX(node_id, prop, idx),	\
 	DT_FOREACH_PROP_ELEM, pinmux,	\
-	Z_PINCTRL_STATE_PIN_INIT)}
+	Z_PINCTRL_STATE_PIN_INIT)
+
+/* pinctrl-N may list several phandles; DT_PHANDLE() would silently drop
+ * every entry after the first, so iterate the property elements instead.
+ * The outer loop must be the _SEP spelling: plain DT_FOREACH_PROP_ELEM is
+ * painted blue while it expands and could not be reused for the inner
+ * pinmux loop above.
+ */
+#define Z_PINCTRL_STATE_PINS_INIT(node_id, prop)	\
+	{DT_FOREACH_PROP_ELEM_SEP(node_id, prop,	\
+	Z_PINCTRL_STATE_PHANDLE_INIT, ())}
 
 #ifdef __cplusplus
 }
