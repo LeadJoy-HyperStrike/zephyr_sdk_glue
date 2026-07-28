@@ -38,6 +38,8 @@ config HAS_HPMSDK_PWM
 	bool
 config HAS_HPMSDK_PWMV2
 	bool
+config HAS_HPMSDK_PPI
+	bool
 config HAS_HPMSDK_PLLCTL
 	bool
 config HAS_HPMSDK_PLLCTLV2
