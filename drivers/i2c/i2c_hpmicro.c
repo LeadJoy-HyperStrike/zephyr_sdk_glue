@@ -22,7 +22,27 @@
 #define HPM_I2C_STATUS_SLAVE_NEXT_WRITE    2
 #define HPM_I2C_STATUS_NOT_ADDRHIT         3
 #define HPM_I2C_STATUS_ADDRHIT             4
-#define HPM_I2C_TRANSFER_TIMEOUT_MS        20
+
+/*
+ * A controller transfer is bounded by what it can take on the wire, never by a
+ * single constant: one message may carry I2C_SOC_TRANSFER_COUNT_MAX (4096)
+ * bytes, which is ~369 ms at the 100 kHz this driver defaults to.  Budget the
+ * ideal bus time times a margin, plus a floor that leaves short transfers a
+ * generous allowance for the automatic clock stretching of RM 61.2.1.
+ */
+#define HPM_I2C_TIMEOUT_FLOOR_MS           20U
+#define HPM_I2C_TIMEOUT_MARGIN             2U
+#define HPM_I2C_BITS_PER_BYTE              9U
+
+#define HPM_I2C_SPEED_STANDARD_HZ          100000U
+#define HPM_I2C_SPEED_FAST_HZ              400000U
+#define HPM_I2C_SPEED_FAST_PLUS_HZ         1000000U
+
+/* A STOP costs one SCL period plus setup/hold; allow a byte time of slack. */
+#define HPM_I2C_STOP_BUDGET_BITS           16U
+/* RM 61.3.8: CTRL.RESET_LEN defaults to 9 clocks, the I2C-spec unwedge. */
+#define HPM_I2C_RECOVERY_CLOCKS            9U
+
 struct hpmicro_i2c_config {
 	I2C_Type *base;
 	uint32_t clock_name;
@@ -47,6 +67,8 @@ struct hpmicro_i2c_data {
 	struct i2c_target_config *slave;
 	struct k_sem completion;
 	struct k_mutex mutex;
+	/* Configured SCL frequency; sizes every timeout and recovery wait. */
+	uint32_t bus_freq_hz;
 };
 
 #define DEV_BASE(dev) (((struct hpmicro_i2c_config *)(dev->config))->base)
@@ -65,12 +87,15 @@ static int hpmicro_i2c_set_bus_speed(const struct device *dev, uint32_t dev_conf
 	switch (I2C_SPEED_GET(dev_config)) {
 	case I2C_SPEED_STANDARD:
 		config.i2c_mode = i2c_mode_normal;
+		data->bus_freq_hz = HPM_I2C_SPEED_STANDARD_HZ;
 		break;
 	case I2C_SPEED_FAST:
 		config.i2c_mode = i2c_mode_fast;
+		data->bus_freq_hz = HPM_I2C_SPEED_FAST_HZ;
 		break;
 	case I2C_SPEED_FAST_PLUS:
 		config.i2c_mode = i2c_mode_fast_plus;
+		data->bus_freq_hz = HPM_I2C_SPEED_FAST_PLUS_HZ;
 		break;
 	case I2C_SPEED_HIGH:
 	case I2C_SPEED_ULTRA:
@@ -115,6 +140,95 @@ static int hpmicro_i2c_configure(const struct device *dev,
 	}
 	k_mutex_unlock(&data->mutex);
 	return 0;
+}
+
+static uint32_t hpmicro_i2c_bus_freq(const struct hpmicro_i2c_data *data)
+{
+	return (data->bus_freq_hz != 0U) ? data->bus_freq_hz
+					 : HPM_I2C_SPEED_STANDARD_HZ;
+}
+
+static uint32_t hpmicro_i2c_bit_time_us(const struct hpmicro_i2c_data *data)
+{
+	return DIV_ROUND_UP(1000000U, hpmicro_i2c_bus_freq(data));
+}
+
+/*
+ * Size the completion wait from the transfer itself.  A single constant either
+ * strands the caller on a long transfer or fails to bound a short one.
+ */
+static k_timeout_t hpmicro_i2c_transfer_timeout(const struct hpmicro_i2c_data *data,
+						const struct i2c_msg *msgs,
+						uint8_t num_msgs)
+{
+	uint64_t bits = 0U;
+	uint32_t ms;
+
+	for (uint8_t i = 0U; i < num_msgs; i++) {
+		/* Payload plus one address byte for each (re)start. */
+		bits += ((uint64_t)msgs[i].len + 1U) * HPM_I2C_BITS_PER_BYTE;
+	}
+
+	ms = (uint32_t)((bits * 1000U) / hpmicro_i2c_bus_freq(data));
+
+	return K_MSEC(HPM_I2C_TIMEOUT_FLOOR_MS + HPM_I2C_TIMEOUT_MARGIN * ms);
+}
+
+/* Spin on a hardware condition for a bounded number of microseconds. */
+#define HPM_I2C_POLL_UNTIL(cond, budget_us)				\
+	do {								\
+		uint32_t _left = (budget_us);				\
+		while (!(cond)) {					\
+			if (_left == 0U) {				\
+				break;					\
+			}						\
+			k_busy_wait(1);					\
+			_left--;					\
+		}							\
+	} while (false)
+
+/*
+ * Return the controller and the bus to a usable state after a transfer that
+ * never reported completion.  Every step below is a hardware fact from the
+ * HPM6E00 reference manual (chapter 61) rather than a guessed delay:
+ *
+ *  - RM 61.3.5: STATUS.CMPL "must be cleared, otherwise the next transaction
+ *    is blocked".  It is therefore cleared *before* the STOP is issued -- a
+ *    CMPL raised by the very interrupt that went missing would otherwise
+ *    block the abort itself, exactly when the abort is needed.  The vendor
+ *    HAL orders its address-miss recovery the same way (hpm_i2c_drv.c).
+ *  - RM 61.3.9: CMD "keeps the value 0x1 until the transfer completes", so
+ *    polling it is a real completion indication for the STOP transaction.
+ *  - RM 61.3.5: STATUS.LINESDA reports the SDA line level, so the bus is only
+ *    clocked when a target really is still holding it low.  A STOP alone
+ *    cannot free that case, and pulsing an already-idle bus is pointless.
+ *  - RM 61.3.8: CTRL.RESET_ON "is cleared by hardware once the reset ends and
+ *    cannot be cleared by software", which bounds the unwedge precisely.
+ */
+static void hpmicro_i2c_abort(const struct device *dev)
+{
+	const struct hpmicro_i2c_config *cfg = dev->config;
+	struct hpmicro_i2c_data *data = dev->data;
+	uint32_t bit_us = hpmicro_i2c_bit_time_us(data);
+
+	i2c_clear_status(cfg->base, I2C_STATUS_CMPL_MASK);
+	cfg->base->CTRL = I2C_CTRL_PHASE_STOP_SET(true);
+	cfg->base->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
+	HPM_I2C_POLL_UNTIL((cfg->base->CMD & I2C_CMD_CMD_MASK) !=
+				   I2C_CMD_ISSUE_DATA_TRANSMISSION,
+			   bit_us * HPM_I2C_STOP_BUDGET_BITS);
+
+#if defined(HPM_IP_FEATURE_I2C_SUPPORT_RESET) && (HPM_IP_FEATURE_I2C_SUPPORT_RESET == 1)
+	if ((i2c_get_status(cfg->base) & I2C_STATUS_LINESDA_MASK) == 0U) {
+		i2c_gen_reset_signal(cfg->base, HPM_I2C_RECOVERY_CLOCKS);
+		HPM_I2C_POLL_UNTIL((cfg->base->CTRL & I2C_CTRL_RESET_ON_MASK) == 0U,
+				   bit_us * (HPM_I2C_RECOVERY_CLOCKS + 2U) *
+					   HPM_I2C_TIMEOUT_MARGIN);
+	}
+#endif
+
+	i2c_clear_status(cfg->base, I2C_EVENT_ALL_MASK);
+	cfg->base->CMD = I2C_CMD_CLEAR_FIFO;
 }
 
 static int hpmicro_i2c_transfer(const struct device *dev,
@@ -186,8 +300,17 @@ static int hpmicro_i2c_transfer(const struct device *dev,
 			cfg->base->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
 	}
 	i2c_enable_irq(cfg->base, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE);
-	ret = k_sem_take(&data->completion,
-			 K_MSEC(HPM_I2C_TRANSFER_TIMEOUT_MS));
+	if (data->slave) {
+		/*
+		 * Target mode: waiting to be addressed by a bus controller is
+		 * unbounded by nature, so no deadline applies to this branch.
+		 */
+		ret = k_sem_take(&data->completion, K_FOREVER);
+	} else {
+		ret = k_sem_take(&data->completion,
+				 hpmicro_i2c_transfer_timeout(data, msgs,
+							      num_msgs));
+	}
 	if (ret != 0) {
 		/*
 		 * Never strand a Zephyr client forever when the controller misses
@@ -195,12 +318,19 @@ static int hpmicro_i2c_transfer(const struct device *dev,
 		 * the FIFO/status clean so the caller can retry or reinitialize.
 		 */
 		i2c_disable_irq(cfg->base, I2C_EVENT_ALL_MASK);
-		cfg->base->CTRL = I2C_CTRL_PHASE_STOP_SET(true);
-		cfg->base->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
-		k_busy_wait(10);
-		i2c_clear_status(cfg->base, I2C_EVENT_ALL_MASK);
-		cfg->base->CMD = I2C_CMD_CLEAR_FIFO;
-		ret = -ETIMEDOUT;
+
+		/*
+		 * Disabling the interrupt cannot retract an ISR that has already
+		 * been entered.  If it completed the transfer while this thread
+		 * was timing out, honour that result rather than reporting a
+		 * spurious -ETIMEDOUT and resetting a healthy controller.
+		 */
+		if (k_sem_take(&data->completion, K_NO_WAIT) == 0) {
+			ret = 0;
+		} else {
+			hpmicro_i2c_abort(dev);
+			ret = -ETIMEDOUT;
+		}
 	}
 	k_mutex_unlock(&data->mutex);
 	if (ret == 0 &&
