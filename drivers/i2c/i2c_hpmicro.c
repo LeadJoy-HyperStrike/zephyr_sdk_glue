@@ -247,6 +247,27 @@ static int hpmicro_i2c_transfer(const struct device *dev,
 		return -EINVAL;
 	}
 
+	/*
+	 * The ISR sequencer only advances correctly when every message except
+	 * the last is a WRITE.  A non-final READ is completed by the receive
+	 * path, which decrements nr_msgs, advances and restarts the next
+	 * message; that same message's TRANSACTION_COMPLETE then decrements
+	 * again and reports the whole transfer done -- while the next message
+	 * is still on the wire, writing into a caller buffer that
+	 * i2c_transfer() has already returned.  (hpmicro_restart_i2c() has a
+	 * matching gap: without I2C_MSG_RESTART it arms FIFO_EMPTY even for a
+	 * read continuation.)
+	 *
+	 * Refuse that shape rather than corrupt it.  i2c_write_read(),
+	 * i2c_burst_read() and the register-access helpers all put their READ
+	 * last, so nothing that works today is turned away.
+	 */
+	for (uint8_t i = 0U; i + 1U < num_msgs; i++) {
+		if ((msgs[i].flags & I2C_MSG_RW_MASK) == I2C_MSG_READ) {
+			return -ENOTSUP;
+		}
+	}
+
 	k_mutex_lock(&data->mutex, K_FOREVER);
 
 	/*
