@@ -22,6 +22,7 @@
 #define HPM_I2C_STATUS_SLAVE_NEXT_WRITE    2
 #define HPM_I2C_STATUS_NOT_ADDRHIT         3
 #define HPM_I2C_STATUS_ADDRHIT             4
+#define HPM_I2C_TRANSFER_TIMEOUT_MS        20
 struct hpmicro_i2c_config {
 	I2C_Type *base;
 	uint32_t clock_name;
@@ -134,6 +135,13 @@ static int hpmicro_i2c_transfer(const struct device *dev,
 
 	k_mutex_lock(&data->mutex, K_FOREVER);
 
+	/*
+	 * A NACK completes by the early ISR path below.  Older versions left a
+	 * second completion token behind when the controller subsequently raised
+	 * TRANSACTION_COMPLETE, so the next transfer returned before its address
+	 * phase and reported stale data as a successful transaction.
+	 */
+	k_sem_reset(&data->completion);
 	data->transfer.msgs = msgs;
 	data->transfer.curr_buf = msgs->buf;
 	data->transfer.curr_len = msgs->len;
@@ -178,9 +186,25 @@ static int hpmicro_i2c_transfer(const struct device *dev,
 			cfg->base->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
 	}
 	i2c_enable_irq(cfg->base, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE);
-	k_sem_take(&data->completion, K_FOREVER);
+	ret = k_sem_take(&data->completion,
+			 K_MSEC(HPM_I2C_TRANSFER_TIMEOUT_MS));
+	if (ret != 0) {
+		/*
+		 * Never strand a Zephyr client forever when the controller misses
+		 * its completion interrupt.  Abort the active transfer and leave
+		 * the FIFO/status clean so the caller can retry or reinitialize.
+		 */
+		i2c_disable_irq(cfg->base, I2C_EVENT_ALL_MASK);
+		cfg->base->CTRL = I2C_CTRL_PHASE_STOP_SET(true);
+		cfg->base->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
+		k_busy_wait(10);
+		i2c_clear_status(cfg->base, I2C_EVENT_ALL_MASK);
+		cfg->base->CMD = I2C_CMD_CLEAR_FIFO;
+		ret = -ETIMEDOUT;
+	}
 	k_mutex_unlock(&data->mutex);
-	if (data->transfer.status == HPM_I2C_STATUS_NOT_ADDRHIT) {
+	if (ret == 0 &&
+	    data->transfer.status == HPM_I2C_STATUS_NOT_ADDRHIT) {
 		ret = -ENXIO;
 	}
 	return ret;
@@ -329,10 +353,18 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_isr(const struct device
 	} else {
 		if (data->transfer.status != HPM_I2C_STATUS_ADDRHIT) {
 			data->transfer.status = HPM_I2C_STATUS_NOT_ADDRHIT;
-			i2c_disable_irq(i2c, I2C_EVENT_FIFO_FULL | I2C_EVENT_FIFO_EMPTY);
+			i2c_disable_irq(i2c, I2C_EVENT_ADDRESS_HIT |
+					    I2C_EVENT_TRANSACTION_COMPLETE |
+					    I2C_EVENT_BYTE_RECEIVED |
+					    I2C_EVENT_FIFO_FULL |
+					    I2C_EVENT_FIFO_EMPTY);
+			i2c_clear_status(i2c, status &
+					 (I2C_EVENT_ADDRESS_HIT |
+					  I2C_EVENT_TRANSACTION_COMPLETE));
 			i2c->CTRL = I2C_CTRL_PHASE_STOP_SET(true);
-      i2c->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
+			i2c->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
 			k_sem_give(&data->completion);
+			return;
 		}
 	}
 
@@ -371,12 +403,12 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_isr(const struct device
 			}
 			if ((transfer->curr_index == transfer->curr_len) && (transfer->curr_len > 0)) {
 				i2c_disable_irq(i2c, I2C_EVENT_FIFO_FULL);
-				transfer->msgs++;
 				transfer->nr_msgs--;
-				transfer->curr_buf = transfer->msgs->buf;
-				transfer->curr_len = transfer->msgs->len;
-				transfer->curr_index = 0;
 				if (transfer->nr_msgs != 0) {
+					transfer->msgs++;
+					transfer->curr_buf = transfer->msgs->buf;
+					transfer->curr_len = transfer->msgs->len;
+					transfer->curr_index = 0;
 					if (hpmicro_restart_i2c(dev, transfer->curr_len) < 0) {
 						i2c->CTRL |= I2C_CTRL_PHASE_STOP_MASK;
 					}
