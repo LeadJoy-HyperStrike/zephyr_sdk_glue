@@ -18,11 +18,11 @@
 #include <string.h>
 #include <errno.h>
 #include "hpm_romapi.h"
+#ifdef ARRAY_SIZE
+#undef ARRAY_SIZE
+#endif
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
-#include <stddef.h>
-#include <string.h>
-#include <errno.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/storage/flash_map.h>

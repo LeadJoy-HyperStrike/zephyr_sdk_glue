@@ -9,6 +9,8 @@
 
 #if defined(CONFIG_SOC_SERIES_HPM6700)
 #include <dt-bindings/clock/hpm6750-clocks.h>
+#elif defined(CONFIG_SOC_SERIES_HPM5100)
+#include <dt-bindings/clock/hpm5151-clocks.h>
 #elif defined(CONFIG_SOC_SERIES_HPM5300)
 #include <dt-bindings/clock/hpm5361-clocks.h>
 #elif defined(CONFIG_SOC_SERIES_HPM6200)

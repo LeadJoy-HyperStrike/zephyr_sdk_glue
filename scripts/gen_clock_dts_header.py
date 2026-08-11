@@ -10,7 +10,7 @@ import lib.sdk_glue_banner as ba
 base_dir = utils.SDK_GLUE_BASE
 operate_dir = os.path.join(utils.HPM_SDK_BASE, "soc")
 output_dir = os.path.join(utils.SDK_GLUE_BASE, "include", "dt-bindings", "clock")
-soc_list = ["HPM5361", "HPM6280", "HPM6360", "HPM6750", "HPM6880", "HPM6E80"]
+soc_list = ["HPM5151", "HPM5361", "HPM6280", "HPM6360", "HPM6750", "HPM6880", "HPM6E80"]
 
 class dts_header:
     config_error = utils.error
@@ -305,7 +305,7 @@ def main():
     parser = argparse.ArgumentParser(description = "generate zephyr dts header files")
     parser.add_argument('--soc',
                         help='''generate hpmicro soc zephyr dts header
-                        options: "HPM5361", "HPM6280", "HPM6360", "HPM6750", "HPM6880", "HPM6E80"''')
+                        options: "HPM5151", "HPM5361", "HPM6280", "HPM6360", "HPM6750", "HPM6880", "HPM6E80"''')
     parser.add_argument('--org',
                         help='organization name')
     parser.add_argument('--license',

@@ -1,0 +1,180 @@
+/*
+ * Copyright 2026 HPMicro
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <hpmicro/hpm5151.dtsi>
+#include "hpm5100evk-pinctrl.dtsi"
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/i2c/i2c.h>
+
+/ {
+	model = "HPMicro HPM5151EVK";
+	compatible = "HPMicro,hpm5100evk";
+
+	aliases {
+		led0 = &led_r;
+		sw0 = &pbutn;
+		adc0 = &adc0;
+		i2c-0 = &i2c1;
+	};
+
+	chosen {
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,flash = &flash0;
+		zephyr,sram = &hram;
+		zephyr,itcm = &ilm;
+		zephyr,dtcm = &dlm;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,flash-controller = &xpi0;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		led_r: led_r {
+			gpios = <&gpioa 18 (GPIO_ACTIVE_LOW)>;
+			label = "LED";
+		};
+	};
+
+	gpio_keys {
+		compatible = "gpio-keys";
+		pbutn: pbutn {
+			/* Match sdk board.h BOARD_APP_GPIO_PIN = PA15 (USER KEY). */
+			gpios = <&gpioa 15 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_uart0>;
+	pinctrl-names = "default";
+	uart-idle-trgm-reg = <0xF047C000>;
+	uart-idle-trgm-pin = <115>;
+	uart-idle-trgm-input-src = <0x0B>;
+	uart-idle-trgm-output-gptmr-in = <0x38>;
+	uart-idle-trgm-output-gptmr-sync = <0x37>;
+	uart-idle-gptmr-reg = <0xF0004000>;
+	uart-idle-gptmr-clock-name = <CLOCK_GPTMR1>;
+	dmas = <&hdma 0 8>, <&hdma 1 9>;
+	dma-names = "rx", "tx";
+};
+
+&gpioa {
+	pinctrl-0 = <&pinmux_gpioa>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&hdma {
+	status = "okay";
+};
+
+/*
+ * BOARD_APP_I2C = I2C1 (PY03 SCL / PY02 SDA).
+ */
+&i2c1 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_i2c1>;
+	pinctrl-names = "default";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+};
+
+/*
+ * BOARD_APP_SPI = SPI3 (PC06 CS / PC10 SCLK / PC13 MOSI / PC15 MISO).
+ * Short MOSI-MISO for loopback. MISO(PC15) shares ADC path — high SPI
+ * clocks may need the ADC-side capacitor removed (SDK README).
+ */
+&spi3 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_spi3>;
+	pinctrl-names = "default";
+};
+
+&xpi0 {
+	status = "okay";
+	flash0: flash@0 {
+		compatible = "hpmicro,hpmicro-flash", "soc-nv-flash";
+		reg = <0x80000000 DT_SIZE_M(1)>;
+		status = "okay";
+		erase-block-size = <4096>;
+		write-block-size = <1>;
+		nor-cfg-opt-hdr = <0xfcf90002>;
+		nor-cfg-opt-opt0 = <0x05>;
+		nor-cfg-opt-opt1 = <0x1000>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			boot_partition: partition@0 {
+				label = "mcuboot";
+				reg = <0x3000 0x20000>;
+			};
+
+			slot0_partition: partition@23000 {
+				label = "image-0";
+				reg = <0x23000 DT_SIZE_K(384)>;
+			};
+
+			slot1_partition: partition@83000 {
+				label = "image-1";
+				reg = <0x83000 DT_SIZE_K(384)>;
+			};
+
+			scratch_partition: partition@E3000 {
+				label = "image-scratch";
+				reg = <0xE3000 DT_SIZE_K(64)>;
+			};
+
+			storage_partition: partition@F3000 {
+				label = "storage";
+				reg = <0xF3000 DT_SIZE_K(64)>;
+			};
+		};
+	};
+};
+
+&usb0 {
+	pinctrl-0 = <&pinmux_usb0>;
+	pinctrl-names = "default";
+};
+
+zephyr_udc0: &usb0 {
+	compatible = "hpmicro,hpm-udc";
+	status = "disabled";
+};
+
+/*
+ * Default app ADC: PC05 / ADC0 channel 2 (sdk BOARD_APP_ADC16_CH_1).
+ * Used by samples/drivers/adc/adc_dt via zephyr,user io-channels.
+ */
+/ {
+	zephyr,user {
+		io-channels = <&adc0 2>;
+	};
+};
+
+&adc0 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_adc0>;
+	pinctrl-names = "default";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@2 {
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+};

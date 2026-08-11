@@ -1,0 +1,16 @@
+/*
+ * Copyright 2026 HPMicro
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+&zephyr_udc0 {
+	status = "okay";
+	/* CDC needs EP0 + bulk IN/OUT + INT IN; keep headroom without 16-EP cfg arrays. */
+	num-bidir-endpoints = <8>;
+
+	cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		tx-fifo-size = <256>;
+		rx-fifo-size = <256>;
+	};
+};

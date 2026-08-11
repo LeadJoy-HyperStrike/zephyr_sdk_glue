@@ -20,6 +20,18 @@ As hpm6750evk2 for example:
 
     west build -p always -b hpm6750evk2 -S hid-mouse samples/subsys/usb/hid-mouse -T sample.usb_device_next.hid-mouse
 
+As hpm5100evk for example:
+
+.. code-block:: console
+
+    west build -p always -b hpm5100evk -S hid-mouse zephyr/samples/subsys/usb/hid-mouse -T sample.usb_device_next.hid-mouse -d build_hpm5100evk_usb_hid_mouse
+    west flash -d build_hpm5100evk_usb_hid_mouse
+
+Notes for hpm5100evk:
+
+- Use board USB0 data port; ``sw0`` is left click, ``led0`` is the sample LED.
+- Overlay enables ``polling-mode`` on ``gpio_keys`` (HPM GPIO lacks ``GPIO_INT_EDGE_BOTH``).
+
 Known Issues
 -------------
 

@@ -249,11 +249,10 @@ static int uart_hpm_configure_init(const struct device *dev, const struct uart_c
 	// 	return -ENODEV;
 	// }
 #endif
+	uart_default_config(base, &uart_config);
 	clock_set_source_divider(config->clock_name, config->clock_src, 1U);
 	clock_add_to_group(config->clock_name, 0);
-
-	uart_default_config(base, &uart_config);
-	uart_config.src_freq_in_hz =	 clock_get_frequency(config->clock_name);
+	uart_config.src_freq_in_hz = clock_get_frequency(config->clock_name);
 	uart_config.baudrate = cfg->baudrate;
 #ifdef CONFIG_UART_ASYNC_API
 	uart_config.fifo_enable = true;

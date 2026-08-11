@@ -1,0 +1,10 @@
+# Copyright (c) 2026 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+config HWINFO_HPMICRO
+	bool "HPMicro OTP UUID as hwinfo device ID"
+	default y
+	depends on HWINFO
+	depends on SOC_SERIES_HPM5100
+	help
+	  Provide USB/device serial numbers from the SoC OTP UUID.

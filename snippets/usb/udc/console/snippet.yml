@@ -1,0 +1,12 @@
+# Copyright (c) 2026 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+name: console
+append:
+  EXTRA_CONF_FILE: console.conf
+
+boards:
+  hpm5100evk/hpm5151:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: boards/hpm5100evk.overlay
+      EXTRA_CONF_FILE: boards/hpm5100evk.conf
