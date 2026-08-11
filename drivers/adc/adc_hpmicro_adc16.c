@@ -8,7 +8,6 @@
 #define DT_DRV_COMPAT hpmicro_hpm_adc16
 
 #include <string.h>
-#include <zephyr/cache.h>
 #include <zephyr/drivers/adc.h>
 #include <hpm_adc16_drv.h>
 #include <hpm_clock_drv.h>
@@ -54,11 +53,21 @@ struct hpmicro_adc16_data {
 	uint16_t *buffer;
 	uint16_t *repeat_buffer;
 	uint32_t channels;
-	uint32_t seq_buffer[ADC_SOC_SEQ_MAX_LEN];
+	/*
+	 * Written by the ADC seq-DMA and read by the ISR after an l1c
+	 * invalidate: must own its D-cache lines exclusively (64 B lines on
+	 * HPM6E80/HPM5151). Without the alignment the invalidate would discard
+	 * dirty neighbouring members sharing the line, and dirty-line eviction
+	 * would overwrite DMA-written results.
+	 */
+	uint32_t seq_buffer[ADC_SOC_SEQ_MAX_LEN] __aligned(64);
 	uint8_t channel_id;
 	uint8_t channel_num;
 	uint8_t resolution;
 };
+
+BUILD_ASSERT((ADC_SOC_SEQ_MAX_LEN * sizeof(uint32_t)) % 64 == 0,
+	     "seq_buffer must cover whole D-cache lines");
 
 #if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)
 static void hpmicro_init_trigger_mux(TRGM_Type * ptr, uint32_t hpm_trig_input_src, uint32_t trig_num)
@@ -224,6 +233,15 @@ static void hpmicro_adc16_start_channel(const struct device *dev)
 #endif
 	adc16_init_seq_dma(base, &dma_cfg);
 
+	/*
+	 * adc16_init_seq_dma() memset() the buffer through the D-cache, leaving
+	 * dirty zero lines that may evict at any time and overwrite results the
+	 * ADC DMA has meanwhile written to RAM. Flush (writeback + invalidate)
+	 * so no dirty line is outstanding while the DMA runs; the ISR
+	 * invalidates again before reading.
+	 */
+	l1c_dc_flush((uint32_t)data->seq_buffer, sizeof(data->seq_buffer));
+
 	adc16_enable_interrupts(base, adc16_event_seq_single_complete);
 #if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)
 	if (!config->trig_en) {
@@ -272,11 +290,16 @@ __attribute__((section(".isr"))) static void hpmicro_adc16_isr(const struct devi
 
 	if (ADC16_INT_STS_SEQ_CVC_GET(status)) {
 		adc16_clear_status_flags(base, status);
-#if defined(CONFIG_DCACHE)
-		/* ADC DMA wrote seq_buffer; drop stale D-cache lines before read. */
-		sys_cache_data_invd_range(data->seq_buffer,
-					  data->channel_num * sizeof(uint32_t));
-#endif
+		/*
+		 * ADC seq-DMA wrote seq_buffer; drop stale D-cache lines before
+		 * reading. Deliberately NOT sys_cache_data_invd_range(): without
+		 * CONFIG_CACHE_MANAGEMENT (our builds) that API is a silent
+		 * no-op stub. The HPM l1c HAL works regardless of the Zephyr
+		 * cache config. seq_buffer is __aligned(64) and whole-line
+		 * sized, so the invalidate cannot touch neighbouring members.
+		 */
+		l1c_dc_invalidate((uint32_t)data->seq_buffer,
+				  sizeof(data->seq_buffer));
 		channels = data->channels;
 		while (channels) {
 			channel_id = find_lsb_set(channels) - 1;

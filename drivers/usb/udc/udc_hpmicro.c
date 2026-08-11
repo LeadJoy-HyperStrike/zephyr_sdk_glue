@@ -1096,15 +1096,25 @@ static int udc_hpm_init(const struct device *dev)
 				USB_USBINTR_PCE_MASK | USB_USBINTR_URE_MASK |
 				USB_USBINTR_SLE_MASK);
 
+#if defined(CONFIG_SOC_SERIES_HPM5100)
 	/*
-	 * Match board_init_usb() PHY/VBUS, then usb_dc_init()-like controller
-	 * bring-up. Critical: leave soft-connect OFF until udc_enable() so the
-	 * host cannot race EP0 open (Zephyr opens EP0 after udc_enable).
+	 * HPM5100 EVK bring-up only: host-port power polarity, settle time,
+	 * internal-VBUS session detect (match board_init_usb()).
+	 *
+	 * MUST NOT run on HS2/HPM6E00: usb_phy_using_internal_vbus() makes the
+	 * PHY ignore the VBUS pin, which kills the VBUS-removed/URE bus-death
+	 * detection the fastpath kill switch (cec27c0) and the auto-disconnect
+	 * sleep design rely on; the 100 ms busy-wait would also stall boot of
+	 * both the app and the MCUboot recovery image.
 	 */
 	usb_hcd_set_power_ctrl_polarity(config->base, true);
 	k_busy_wait(100 * 1000);
 	usb_phy_using_internal_vbus(config->base);
+#endif
 
+	/* Leave soft-connect OFF until udc_enable() so the host cannot race
+	 * EP0 open (Zephyr opens EP0 right after udc_enable).
+	 */
 	usb_device_init(handle, int_mask);
 	/* usb_device_init() connects; drop pull-up until stack enables us. */
 	config->base->USBCMD &= ~USB_USBCMD_RS_MASK;
