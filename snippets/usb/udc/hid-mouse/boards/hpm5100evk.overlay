@@ -1,0 +1,18 @@
+/*
+ * Copyright 2026 HPMicro
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+&zephyr_udc0 {
+	status = "okay";
+	num-bidir-endpoints = <8>;
+};
+
+/*
+ * HPM GPIO does not support GPIO_INT_EDGE_BOTH; gpio-keys needs polling.
+ */
+/ {
+	gpio_keys {
+		polling-mode;
+	};
+};

@@ -1,0 +1,59 @@
+# Copyright (c) 2026 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+DT_COMPAT_HPMICRO_HPM_I2S := hpmicro,hpm-i2s
+
+config I2S_HPMICRO
+	bool "HPMicro I2S driver"
+	default y
+	depends on DT_HAS_HPMICRO_HPM_I2S_ENABLED
+	depends on I2S
+	select HAS_HPMSDK_I2S
+	help
+	  Enable the HPMicro I2S controller driver.
+
+if I2S_HPMICRO
+config I2S_HPMICRO_DMA
+	bool "HPMicro I2S DMA support (experimental)"
+	depends on DMA
+	help
+	  Enable DMA resource probing for HPMicro I2S.
+	  Data path still defaults to polling and this option prepares
+	  per-instance DMA metadata for follow-up integration.
+
+config I2S_HPMICRO_DMA_TX_QUEUE_DEPTH
+	int "HPMicro I2S DMA TX queue depth"
+	depends on I2S_HPMICRO_DMA
+	range 1 8
+	default 2
+	help
+	  Number of queued TX blocks for the HPMicro I2S DMA path.
+	  Lower values reduce RAM usage.
+
+config I2S_HPMICRO_DMA_RX_QUEUE_DEPTH
+	int "HPMicro I2S DMA RX queue depth"
+	depends on I2S_HPMICRO_DMA
+	range 1 8
+	default 2
+	help
+	  Number of queued RX blocks for the HPMicro I2S DMA path.
+	  Lower values reduce RAM usage.
+
+config I2S_HPMICRO_DMA_TX_WATCHDOG_MS
+	int "HPMicro I2S DMA TX watchdog period (ms)"
+	depends on I2S_HPMICRO_DMA
+	range 1 20
+	default 2
+	help
+	  Periodic poll interval to detect TX DMA completion when callbacks
+	  are delayed or missed on some platforms.
+
+config I2S_HPMICRO_DMA_RX_WATCHDOG_MS
+	int "HPMicro I2S DMA RX watchdog period (ms)"
+	depends on I2S_HPMICRO_DMA
+	range 1 20
+	default 2
+	help
+	  Periodic poll interval to detect RX DMA completion when callbacks
+	  are delayed or missed on some platforms.
+endif

@@ -45,7 +45,8 @@ static int hpmicro_pin_configure(IOC_Type *ioc_base, const uint32_t pin_mux, con
 #if defined(CONFIG_SOC_SERIES_HPM6700)
 	IOC_PAD_PAD_CTL_MS_SET(HPMICRO_PAD_CTL_MS(pin_cfg)) |
 	IOC_PAD_PAD_CTL_SMT_SET(pad_smt) |
-#elif defined(CONFIG_SOC_SERIES_HPM5300) || defined(CONFIG_SOC_SERIES_HPM6300) ||\
+#elif defined(CONFIG_SOC_SERIES_HPM5100) || defined(CONFIG_SOC_SERIES_HPM5300) ||\
+	defined(CONFIG_SOC_SERIES_HPM6300) ||\
 	defined(CONFIG_SOC_SERIES_HPM6800) || defined(CONFIG_SOC_SERIES_HPM6200) ||\
 	defined(CONFIG_SOC_SERIES_HPM6E00)
 	IOC_PAD_PAD_CTL_HYS_SET(pad_smt) |

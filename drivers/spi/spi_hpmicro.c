@@ -26,7 +26,7 @@ LOG_MODULE_REGISTER(spi_hpmicro);
 
 #define MAX_DATA_WIDTH		32  /* data width 1-32 bits */
 
-#define CONFIG_SPI_INTERRUPT_DRIVEN 1
+#define CONFIG_SPI_INTERRUPT_DRIVEN 0
 
 struct spi_hpm_config {
 	SPI_Type *base;

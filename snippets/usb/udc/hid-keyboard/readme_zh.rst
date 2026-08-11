@@ -18,7 +18,19 @@ hid_keyboard
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S hid-keyboard samples/subsys/usb/hid-keyboard -T sample.usbd.hid-keyboard 
+    west build -p always -b hpm6750evk2 -S hid-keyboard samples/subsys/usb/hid-keyboard -T sample.usbd.hid-keyboard
+
+以hpm5100evk为例:
+
+.. code-block:: console
+
+    west build -p always -b hpm5100evk -S hid-keyboard zephyr/samples/subsys/usb/hid-keyboard -T sample.usbd.hid-keyboard -d build_hpm5100evk_usb_hid_keyboard
+    west flash -d build_hpm5100evk_usb_hid_keyboard
+
+hpm5100evk 说明：
+
+- 使用板载 USB0 数据口；按键为 ``sw0``，LED 为 ``led0``。
+- overlay 对 ``gpio_keys`` 开启 ``polling-mode``（HPM GPIO 不支持 ``GPIO_INT_EDGE_BOTH``）。
 
 已知问题
 ----------

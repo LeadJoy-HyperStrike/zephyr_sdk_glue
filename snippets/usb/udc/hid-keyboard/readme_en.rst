@@ -18,7 +18,19 @@ As hpm6750evk2 for example:
 
 .. code-block:: console
 
-    west build -p always -b hpm6750evk2 -S hid-keyboard samples/subsys/usb/hid-keyboard -T sample.usbd.hid-keyboard 
+    west build -p always -b hpm6750evk2 -S hid-keyboard samples/subsys/usb/hid-keyboard -T sample.usbd.hid-keyboard
+
+As hpm5100evk for example:
+
+.. code-block:: console
+
+    west build -p always -b hpm5100evk -S hid-keyboard zephyr/samples/subsys/usb/hid-keyboard -T sample.usbd.hid-keyboard -d build_hpm5100evk_usb_hid_keyboard
+    west flash -d build_hpm5100evk_usb_hid_keyboard
+
+Notes for hpm5100evk:
+
+- Use board USB0 data port; ``sw0`` / ``led0`` are used by the sample.
+- Overlay enables ``polling-mode`` on ``gpio_keys`` (HPM GPIO lacks ``GPIO_INT_EDGE_BOTH``).
 
 Known Issues
 -------------

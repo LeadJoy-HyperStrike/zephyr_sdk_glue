@@ -7,9 +7,12 @@
 
 #define DT_DRV_COMPAT hpmicro_hpm_adc16
 
+#include <string.h>
+#include <zephyr/cache.h>
 #include <zephyr/drivers/adc.h>
 #include <hpm_adc16_drv.h>
 #include <hpm_clock_drv.h>
+#include <hpm_misc.h>
 #if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)
 #include <hpm_trgm_drv.h>
 #endif
@@ -148,46 +151,63 @@ static void hpmicro_adc16_start_channel(const struct device *dev)
 	uint32_t channel_id;
 	uint8_t channel_num = 0;
 
-    channel_config.sample_cycle = config->sample_time;
+	memset(&seq_cfg, 0, sizeof(seq_cfg));
+	memset(&dma_cfg, 0, sizeof(dma_cfg));
+	adc16_get_channel_default_config(&channel_config);
+	channel_config.sample_cycle = config->sample_time;
 	channels = data->channels;
 	while (channels) {
 		channel_id = find_lsb_set(channels) - 1;
 		channels &= ~BIT(channel_id);
 
-		channel_config.ch           = channel_id;
-        adc16_init_channel(base, &channel_config);
+		channel_config.ch = channel_id;
+		adc16_init_channel(base, &channel_config);
 		seq_cfg.queue[channel_num].ch = channel_id;
+		seq_cfg.queue[channel_num].seq_int_en = false;
 		LOG_DBG("Starting channel %d", channel_id);
-		channel_num ++;
+		channel_num++;
 	};
 	data->channel_num = channel_num;
-	seq_cfg.seq_len    = channel_num;
-    seq_cfg.restart_en = false;
-    seq_cfg.cont_en    = true;
-    seq_cfg.sw_trig_en = true;
-    seq_cfg.hw_trig_en = true;
-	adc16_set_seq_config(base, &seq_cfg);
-
-	 /* Set DMA config */
-    dma_cfg.start_addr         = (uint32_t *)core_local_mem_to_sys_address(0, (uint32_t)data->seq_buffer);
-    dma_cfg.buff_len_in_4bytes = channel_num;
-    dma_cfg.stop_en            = false;
-    dma_cfg.stop_pos           = 0;
+	seq_cfg.seq_len = channel_num;
+	seq_cfg.restart_en = false;
+	seq_cfg.cont_en = true;
 #if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)
 	if (config->trig_en) {
-		hpmicro_init_trigger_mux(config->trig_reg, config->trig_input_src, config->trig_num);
+		seq_cfg.hw_trig_en = true;
+		seq_cfg.sw_trig_en = false;
+	} else {
+		seq_cfg.hw_trig_en = false;
+		seq_cfg.sw_trig_en = true;
+	}
+#else
+	seq_cfg.hw_trig_en = false;
+	seq_cfg.sw_trig_en = true;
+#endif
+	/* Match SDK: single-complete IRQ on last queue entry. */
+	if (channel_num > 0) {
+		seq_cfg.queue[channel_num - 1].seq_int_en = true;
+	}
+	adc16_set_seq_config(base, &seq_cfg);
+
+	/* Set DMA config — results land in seq_buffer (SDK process_seq_data). */
+	dma_cfg.start_addr = (uint32_t *)core_local_mem_to_sys_address(
+		0, (uint32_t)data->seq_buffer);
+	dma_cfg.buff_len_in_4bytes = channel_num;
+	dma_cfg.stop_en = false;
+	dma_cfg.stop_pos = 0;
+#if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)
+	if (config->trig_en) {
+		hpmicro_init_trigger_mux(config->trig_reg, config->trig_input_src,
+					 config->trig_num);
 	}
 #endif
-    /* Initialize DMA for the sequence mode */
-    adc16_init_seq_dma(base, &dma_cfg);
+	adc16_init_seq_dma(base, &dma_cfg);
 
-    /* Enable sequence complete interrupt */
-    adc16_enable_interrupts(base, adc16_event_seq_full_complete);
+	adc16_enable_interrupts(base, adc16_event_seq_single_complete);
 #if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)
 	if (!config->trig_en) {
 #endif
-    	/* SW trigger */
-    	adc16_trigger_seq_by_sw(base);
+		adc16_trigger_seq_by_sw(base);
 #if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)
 	}
 #endif
@@ -215,25 +235,34 @@ static void adc_context_update_buffer_pointer(struct adc_context *ctx,
 	}
 }
 
-__attribute__((section(".isr")))static void hpmicro_adc16_isr(const struct device *dev)
+__attribute__((section(".isr"))) static void hpmicro_adc16_isr(const struct device *dev)
 {
 	const struct hpmicro_adc16_config *config = dev->config;
 	struct hpmicro_adc16_data *data = dev->data;
 	ADC16_Type *base = config->base;
+	adc16_seq_dma_data_t *dma_data = (adc16_seq_dma_data_t *)data->seq_buffer;
 	uint32_t status;
 	uint8_t channel_id;
 	uint32_t channels;
 	uint16_t result;
+	uint8_t seq_idx = 0;
 
 	status = adc16_get_status_flags(base);
 
-	if (ADC16_INT_STS_SEQ_CMPT_GET(status)) {
+	if (ADC16_INT_STS_SEQ_CVC_GET(status)) {
 		adc16_clear_status_flags(base, status);
+#if defined(CONFIG_DCACHE)
+		/* ADC DMA wrote seq_buffer; drop stale D-cache lines before read. */
+		sys_cache_data_invd_range(data->seq_buffer,
+					  data->channel_num * sizeof(uint32_t));
+#endif
 		channels = data->channels;
 		while (channels) {
 			channel_id = find_lsb_set(channels) - 1;
 			channels &= ~BIT(channel_id);
-			adc16_get_oneshot_result(base, channel_id, &result);
+			ARG_UNUSED(channel_id);
+			/* Same order as queue[] fill: LSB channel first. */
+			result = dma_data[seq_idx++].result;
 			result = (result & 0xffff) >> (16 - data->resolution);
 			*data->buffer++ = result;
 		};
@@ -252,7 +281,10 @@ static int hpmicro_adc16_init(const struct device *dev)
 	int err;
 
 	clock_set_adc_source(config->adc_clock_name, config->adc_clock_src);
-	clock_set_source_divider(config->src_clock_name, config->src_clock_src, config->src_clock_div);
+	clock_set_source_divider(config->src_clock_name, config->src_clock_src,
+				 config->src_clock_div);
+	/* Required on HPM5151: ungated ADC clock before register access. */
+	clock_add_to_group(config->adc_clock_name, 0);
 
 	err = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
 	if (err) {
@@ -261,13 +293,17 @@ static int hpmicro_adc16_init(const struct device *dev)
 
 	adc16_get_default_config(&adc_config);
 
-    adc_config.conv_mode      = adc16_conv_mode_sequence;
-    adc_config.adc_clk_div    = 2;
-    adc_config.sel_sync_ahb   = true;
-    if (adc_config.conv_mode == adc16_conv_mode_sequence ||
-        adc_config.conv_mode == adc16_conv_mode_preemption) {
-        adc_config.adc_ahb_en = true;
-    }
+	/* Align with SDK adc16 sample init_common_config(). */
+	adc_config.res = adc16_res_16_bits;
+	adc_config.conv_mode = adc16_conv_mode_sequence;
+	adc_config.adc_clk_div = adc16_clock_divider_4;
+#if !defined(HPM_IP_FEATURE_ADC16_FORCE_SYNC_AHB) || !HPM_IP_FEATURE_ADC16_FORCE_SYNC_AHB
+	adc_config.sel_sync_ahb = true;
+#endif
+	if (adc_config.conv_mode == adc16_conv_mode_sequence ||
+	    adc_config.conv_mode == adc16_conv_mode_preemption) {
+		adc_config.adc_ahb_en = true;
+	}
 
 	adc16_init(base, &adc_config);
 
@@ -285,6 +321,8 @@ static const struct adc_driver_api hpmicro_adc16_driver_api = {
 #ifdef CONFIG_ADC_ASYNC
 	.read_async = hpmicro_adc16_read_async,
 #endif
+	/* VREFH typically tied to 3.3V on HPM EVKs (used by adc_raw_to_millivolts_dt). */
+	.ref_internal = 3300,
 };
 
 #if CONFIG_ADC_TRIG

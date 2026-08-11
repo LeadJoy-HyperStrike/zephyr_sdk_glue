@@ -1,0 +1,35 @@
+# Copyright 2026 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+description: HPMicro I2S controller
+
+compatible: "hpmicro,hpm-i2s"
+
+include: [i2s-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  clocks:
+    required: true
+
+  pinctrl-0:
+    required: true
+
+  pinctrl-names:
+    required: true
+
+  dmas:
+    required: false
+    description: |
+      Optional TX/RX DMA specifiers.
+      Expected order is TX then RX.
+
+  dma-names:
+    required: false
+    description: |
+      Must be "tx", "rx" when dmas is provided.
