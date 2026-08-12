@@ -19,8 +19,16 @@ config RISCV_GENERIC_TOOLCHAIN
 config ICACHE
 	default y
 
+# HPM5151 has no configurable PMA (see Kconfig), so SOC_ANDES_V5_PMA and with
+# it ARCH_HAS_NOCACHE_MEMORY_SUPPORT / NOCACHE_MEMORY are permanently off. The
+# UDC driver's cache-maintenance paths (HPM_UDC_USE_NOCACHE, HPM_UDC_DCD_SECTION)
+# therefore compile to nothing here, which would leave QHD/QTD and every USB DMA
+# buffer in plain cached RAM with no maintenance at all. Default D-cache off so
+# that is safe by construction instead of depending on every board/snippet conf
+# remembering CONFIG_DCACHE=n. Turn it back on only together with explicit l1c
+# maintenance on the DMA buffers.
 config DCACHE
-	default y
+	default n
 
 config RISCV_SOC_INTERRUPT_INIT
 	default y

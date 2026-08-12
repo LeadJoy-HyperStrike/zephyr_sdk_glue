@@ -87,6 +87,12 @@
 			input-enable;
 			input-schmitt-enable;
 			bias-pull-up;
+			/* PAD_CTL resets with KE=1 and pinctrl_hpmicro.c only clears
+			 * KE when this property is present. A to-ground key without
+			 * it latches low on the first press (reads as a stuck key,
+			 * not as noise) because the keeper fights the pull-up.
+			 */
+			keeper-capability-disable;
 		};
 
 		group1 {

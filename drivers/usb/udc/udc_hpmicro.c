@@ -802,7 +802,19 @@ static void udc_hpm_isr(const struct device *dev)
 			return;
 		}
 		udc_submit_event(dev, UDC_EVT_RESET, 0);
-		return;
+		/*
+		 * Drop only the transfer-complete work for this pass:
+		 * usb_device_bus_reset() just memset() the whole dcd_data, so
+		 * any endpoint completion latched before the reset now refers
+		 * to wiped QH/QTD state. The vendor drop used a bare `return`
+		 * here, which also swallowed SLE and PCE -- and every status
+		 * bit was already W1C-cleared at the top of this ISR, so the
+		 * hardware never re-raises them. Losing PCE means losing the
+		 * VBUS_REMOVED / VBUS_READY edge, i.e. the fastpath bus-death
+		 * kill (cec27c0) would not fire when a reset and a port change
+		 * coalesce into one interrupt.
+		 */
+		int_status &= ~USB_USBINTR_UE_MASK;
 	}
 
 	if (int_status & USB_USBINTR_SLE_MASK) {
@@ -1228,11 +1240,20 @@ static int udc_hpm_driver_preinit(const struct device *dev)
 
 	clock_add_to_group(config->clock_name, 0);
 
+#if defined(CONFIG_SOC_SERIES_HPM5100)
 	/*
 	 * Early board_init_usb_dp_dm_pins() equivalent: drop DP/DM pulldown
 	 * before usb_phy_init() inside usb_device_init() reconfigures PHY.
+	 *
+	 * HPM5100 only, same gate as the PHY/VBUS block in udc_hpm_init():
+	 * in the HPM SDK this call appears solely in the hpm5100evk /
+	 * hpm5300evk / hpm5301evklite board.c, never in hpm6e00evk's, and the
+	 * PHY_CTRL0 bits it writes have no named definition in either SoC's
+	 * hpm_usb_regs.h. Do not enable it on the HS2 8 kHz path without a
+	 * bench measurement.
 	 */
 	usb_phy_disable_dp_dm_pulldown(config->base);
+#endif
 
 	pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
 

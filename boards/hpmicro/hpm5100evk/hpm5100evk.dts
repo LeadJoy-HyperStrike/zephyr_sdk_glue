@@ -115,7 +115,15 @@
 			#address-cells = <1>;
 			#size-cells = <1>;
 
-			boot_partition: partition@0 {
+			/*
+			 * flash0 is 1 MB and the image starts at 0x3000 (boot
+			 * header), so the table has 0xFD000 to work with. The
+			 * vendor drop used 128K+384K+384K+64K+64K = 0x100000 and
+			 * ran 0x3000 past the end of flash; storage carries the
+			 * shortfall because nothing uses it on this board yet,
+			 * and shrinking a slot would change the image size limit.
+			 */
+			boot_partition: partition@3000 {
 				label = "mcuboot";
 				reg = <0x3000 0x20000>;
 			};
@@ -137,7 +145,7 @@
 
 			storage_partition: partition@F3000 {
 				label = "storage";
-				reg = <0xF3000 DT_SIZE_K(64)>;
+				reg = <0xF3000 DT_SIZE_K(52)>; /* ends exactly at 0x100000 */
 			};
 		};
 	};

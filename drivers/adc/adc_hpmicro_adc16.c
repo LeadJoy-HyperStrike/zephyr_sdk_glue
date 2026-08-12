@@ -225,12 +225,6 @@ static void hpmicro_adc16_start_channel(const struct device *dev)
 	dma_cfg.buff_len_in_4bytes = channel_num;
 	dma_cfg.stop_en = false;
 	dma_cfg.stop_pos = 0;
-#if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)
-	if (config->trig_en) {
-		hpmicro_init_trigger_mux(config->trig_reg, config->trig_input_src,
-					 config->trig_num);
-	}
-#endif
 	adc16_init_seq_dma(base, &dma_cfg);
 
 	/*
@@ -242,13 +236,19 @@ static void hpmicro_adc16_start_channel(const struct device *dev)
 	 * for a plain invalidate: the zeroing is what clears the cycle bits the
 	 * seq-DMA protocol relies on.
 	 *
-	 * Only correct because the sequence is not running yet. With
-	 * config->trig_en the trigger mux is already live above, so a hardware
-	 * trigger landing between the memset and this flush would have its
-	 * results written back over. Nothing enables en-hw-trig today; revisit
-	 * this ordering before the first user does.
+	 * This must happen before anything can trigger the sequence, which is
+	 * why the hardware trigger mux is connected below and not before
+	 * adc16_init_seq_dma(): a trigger landing between the memset and this
+	 * flush would have its DMA results written back over.
 	 */
 	l1c_dc_flush((uint32_t)data->seq_buffer, sizeof(data->seq_buffer));
+
+#if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)
+	if (config->trig_en) {
+		hpmicro_init_trigger_mux(config->trig_reg, config->trig_input_src,
+					 config->trig_num);
+	}
+#endif
 
 	adc16_enable_interrupts(base, adc16_event_seq_single_complete);
 #if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)

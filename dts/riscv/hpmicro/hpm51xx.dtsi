@@ -300,10 +300,15 @@
 			#dma-cells = <2>;
 			compatible = "hpmicro,hpm-dmav2";
 			dma-channels = <8>;
-			dma-requests = <116>;
+			dma-requests = <61>; /* hpm_dmamux_src.h: 0x00..0x3C */
 			reg = <0xf00c8000 0x4000>,
 				<0xf00c4000 0x4000>;
-			interrupts = <34 1>;
+			/* hpm_soc_irq.h: IRQn_HDMA0 = 24. The vendor drop had 34,
+			 * which is IRQn_I2S1 -- HDMA completions would have been
+			 * routed to the wrong PLIC line (and collided with &i2s1,
+			 * whose node legitimately uses 34).
+			 */
+			interrupts = <24 1>;
 			interrupt-parent = <&plic>;
 			status = "disabled";
 		};
