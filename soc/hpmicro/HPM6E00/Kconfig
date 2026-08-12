@@ -73,6 +73,29 @@ config SOC_ANDES_V5_PMA
 		matching of Andes V5 PMA is like RISC-V PMP NAPOT mode
 		(power-of-two alignment).
 
+config HPM_SOC_CPU_FREQ_MHZ
+	int "CPU0/CPU1 core frequency (MHz)"
+	default 600
+	range 24 600
+	help
+		PLL0 VCO frequency; CPU0 and CPU1 both run from PLL0CLK0 with
+		postdiv 1.0 and divider 1, so this is the core clock.
+
+		Safe to retune in isolation: per UM V0.8's default clock source
+		table, of the 73 CLK_TOP_* domains only CLK_TOP_CPU0 and
+		CLK_TOP_CPU1 are sourced from PLL0CLK0. AHB0, XPI0 (the XIP
+		flash!) and 57 other domains sit on PLL1CLK0 and are unaffected,
+		so the ADC convert-clock ceiling (RM 71.2.1.1) does not move.
+
+		Must be a whole multiple of the 24 MHz crystal or
+		pllctlv2_init_pll_with_freq() lands on a fractional MFN.
+
+		WARNING: the core1 8 kHz engine budget is 94 us (XInput) / 96 us
+		(DS4) of a 125 us period at 600 MHz. Scaling is roughly linear
+		for ITCM-resident work, so 480 MHz leaves single-digit
+		microseconds of margin. Re-measure the hot path before shipping
+		anything below 600.
+
 config HPM_SOC_GATE_UNUSED_CLOCKS
 	bool "Leave unused peripheral clocks gated at boot"
 	default y

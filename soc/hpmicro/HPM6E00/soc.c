@@ -107,7 +107,23 @@ static void soc_init_clock(void)
     /* Bump up DCDC voltage to 1275mv */
     pcfg_dcdc_set_voltage(HPM_PCFG, 1275);
 
-    /* Set CPU clock to 600MHz */
+#if CONFIG_HPM_SOC_CPU_FREQ_MHZ != 600
+    /*
+     * Retune PLL0 before pointing the cores at it. Only CLK_TOP_CPU0 and
+     * CLK_TOP_CPU1 are sourced from PLL0CLK0 (UM V0.8 default clock source
+     * table); AHB0, XPI0 and the rest of the peripheral tree run off PLL1CLK0,
+     * so nothing else moves. Reprogramming in place, while the cores are
+     * already running on this PLL, is the sequence the HPM SDK's own board
+     * clock.c files use (see boards/hpm6800evk/clock.c init_board_clock_source,
+     * and hpm5300evk/hpm5301evklite which retune PLL0 to 960/720 MHz);
+     * pllctlv2_init_pll_with_freq() spins on pllctlv2_pll_is_stable().
+     */
+    pllctlv2_init_pll_with_freq(HPM_PLLCTLV2, PLLCTLV2_PLL_PLL0,
+                                CONFIG_HPM_SOC_CPU_FREQ_MHZ * 1000000UL);
+    pllctlv2_set_postdiv(HPM_PLLCTLV2, PLLCTLV2_PLL_PLL0, pllctlv2_clk0, pllctlv2_div_1p0);
+#endif
+
+    /* Set CPU clock to CONFIG_HPM_SOC_CPU_FREQ_MHZ (default 600 MHz) */
     clock_set_source_divider(clock_cpu0, clk_src_pll0_clk0, 1);
     clock_set_source_divider(clock_cpu1, clk_src_pll0_clk0, 1);
 
