@@ -63,15 +63,33 @@ config SOC_ANDES_V5_HWDSP
 		This option enables the AndeStar v5 hardware DSP, in order to
 		support using the DSP instructions.
 
+# HPM5151 has NO configurable Andes PMA. Two independent sources:
+#   - hpm_sdk soc/HPM5100/HPM5151/hpm_soc_feature.h: PMP_SUPPORT_PMA (0)
+#     (same for HPM5301/HPM5361; HPM6E80 leaves it undefined, i.e. has PMA),
+#     which compiles pma_config_attributes() out of hpm_pmp_drv.c entirely;
+#   - HPM5100 UM V0.5 chapter 3.2, the complete non-standard CSR list
+#     (81 entries): PMPCFG0-3 and MCACHE_CTL/MCCTL* are there, PMACFG and
+#     PMAADDR appear nowhere in the 807-page manual.
+#
+# The vendor HPM5100 drop copied this block verbatim from HPM6E00. Left at
+# "default y" it selects ARCH_HAS_NOCACHE_MEMORY_SUPPORT, UDC_HPMICRO then
+# does "select NOCACHE_MEMORY if ARCH_HAS_NOCACHE_MEMORY_SUPPORT", and
+# soc/hpmicro/HPM5100/soc.c compiles soc_init_pma() -> link fails with
+# "undefined reference to pma_config_attributes". Any HPM5151 build that
+# enables USB hits this.
+#
+# Keep the symbol (other HPM SoCs define it, and Zephyr's andestech/ae350
+# has an unrelated symbol of the same name) but make it unreachable: no
+# prompt and no default, so it is always n and cannot claim nocache support.
+# Non-cacheable buffers on HPM5151 must be handled with explicit l1c cache
+# maintenance, or by disabling D-cache (what the vendor's own hpm5100evk
+# snippet configs do with CONFIG_DCACHE=n).
 config SOC_ANDES_V5_PMA
-	bool "Andes V5 Physical Memory Attribute (PMA)"
-	default y
+	bool
 	select ARCH_HAS_NOCACHE_MEMORY_SUPPORT
 	select HAS_HPMSDK_PMP
-	help
-		This option enables the Andes V5 PMA, in order to support SW to
-		configure physical memory attribute by PMA CSRs. The address
-		matching of Andes V5 PMA is like RISC-V PMP NAPOT mode
-		(power-of-two alignment).
+
+config HAS_HPMSDK_PMP
+	default y
 
 endif # SOC_SERIES_HPM5100

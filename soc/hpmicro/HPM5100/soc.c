@@ -13,10 +13,6 @@
 #include "hpm_clock_drv.h"
 #include "hpm_pllctlv2_drv.h"
 #include "hpm_pcfg_drv.h"
-#ifdef CONFIG_NOCACHE_MEMORY
-#include <zephyr/linker/linker-defs.h>
-#include "hpm_pmp_drv.h"
-#endif
 #ifdef CONFIG_XIP
 #include "hpm_bootheader.h"
 #endif
@@ -84,25 +80,14 @@ static void soc_init_clock(void)
 	clock_set_source_divider(clock_mchtmr0, clk_src_osc24m, 1);
 }
 
-#ifdef CONFIG_NOCACHE_MEMORY
-static void soc_init_pma(void)
-{
-	volatile uint32_t start_addr = (uint32_t) &_nocache_ram_start;
-	volatile uint32_t length = (uint32_t) &_nocache_ram_size;
-
-	if (length == 0U) {
-		return;
-	}
-
-	assert((length & (length - 1U)) == 0U);
-	assert((start_addr & (length - 1U)) == 0U);
-
-	pma_attr_t pma_attrs[1] = { 0 };
-	pma_attrs[0].pma_addr = PMA_NAPOT_ADDR(start_addr, length);
-	pma_attrs[0].pma_cfg.val = PMA_CFG(ADDR_MATCH_NAPOT, MEM_TYPE_MEM_NON_CACHE_BUF, AMO_EN);
-	pma_config_attributes(&pma_attrs[0], ARRAY_SIZE(pma_attrs));
-}
-#endif
+/*
+ * No soc_init_pma() here, unlike the other HPM SoCs: HPM5151 has no
+ * configurable Andes PMA (hpm_soc_feature.h: PMP_SUPPORT_PMA (0); the
+ * HPM5100 UM's non-standard CSR list has PMPCFG0-3 but no PMACFG/PMAADDR),
+ * so pma_config_attributes() does not even exist in hpm_pmp_drv.c on this
+ * part. SOC_ANDES_V5_PMA is therefore permanently n in this SoC's Kconfig
+ * and CONFIG_NOCACHE_MEMORY cannot be selected -- see the comment there.
+ */
 
 static int hpmicro_soc_init(void)
 {
@@ -110,9 +95,6 @@ static int hpmicro_soc_init(void)
 
 	key = irq_lock();
 	soc_init_clock();
-#ifdef CONFIG_NOCACHE_MEMORY
-	soc_init_pma();
-#endif
 	irq_unlock(key);
 
 	return 0;
