@@ -43,22 +43,14 @@ if("${HPM_SOC_SERIES}" STREQUAL "HPM5100" AND "${HPM_SOC}" STREQUAL "HPM5151")
     set(HPMSOC_HAS_HPMSDK_GPTMRV2 y)
 endif()
 
-set(HPM_EXTERNAL_5100_SDK_DIR "${HPM_SDK_DIR}/../../sdk_env_v1.12.0_hpm5100_er_2026.06.30/hpm_sdk")
-set(HPM_USE_EXTERNAL_5100_DRIVERS FALSE)
-if("${HPM_SOC_SERIES}" STREQUAL "HPM5100" AND "${HPM_SOC}" STREQUAL "HPM5151")
-    if(EXISTS "${HPM_EXTERNAL_5100_SDK_DIR}/drivers/CMakeLists.txt")
-        set(HPM_USE_EXTERNAL_5100_DRIVERS TRUE)
-        message(STATUS "Use external HPM5100/HPM5151 SDK drivers")
-    endif()
-endif()
-
+# NOTE: the vendor HPM5100 drop redirected drivers/ to a side-by-side
+# sdk_env_v1.12.0_hpm5100_er_* tree because it assumed sdk_env stayed at
+# v1.11.0 (which has no HPM5100 support). sdk_env is now v1.12.1 with the
+# HPM5100 files overlaid, so HPM_SDK_DIR already provides them and the
+# redirect is gone.
 add_subdirectory(${HPM_SDK_DIR}/arch ${HPM_SDK_BINARY_DIR}/arch)
 add_subdirectory(${HPM_SDK_DIR}/soc ${HPM_SDK_BINARY_DIR}/soc)
-if(HPM_USE_EXTERNAL_5100_DRIVERS)
-    add_subdirectory(${HPM_EXTERNAL_5100_SDK_DIR}/drivers ${HPM_SDK_BINARY_DIR}/drivers)
-else()
-    add_subdirectory(${HPM_SDK_DIR}/drivers ${HPM_SDK_BINARY_DIR}/drivers)
-endif()
+add_subdirectory(${HPM_SDK_DIR}/drivers ${HPM_SDK_BINARY_DIR}/drivers)
 
 sdk_inc(.)
 endif()
