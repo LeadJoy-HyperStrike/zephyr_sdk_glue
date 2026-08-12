@@ -908,21 +908,26 @@ static void udc_hpm_isr(const struct device *dev)
 			struct usb_setup_packet setup;
 
 			/*
-			 * ENDPTSETUPSTAT must be acknowledged after copying the
-			 * setup payload from the queue head. Clearing it first can
-			 * release the setup lockout and leave the software seeing a
-			 * zeroed/stale setup packet.
+			 * Setup Data Buffer Tripwire, mandated by the hpm_sdk
+			 * version in use. hpm_sdk v1.12 usb_dcd_init() sets
+			 * USBMODE.SLOM=1, i.e. the hardware setup lockout is OFF
+			 * and software MUST protect the copy itself: ack
+			 * ENDPTSETUPSTAT, then re-copy under SUTW until SUTW is
+			 * still set, which proves no new SETUP landed mid-copy.
 			 *
-			 * NOTE (bound to the hpm_sdk version, not taste): this
-			 * ordering is correct while hpm_sdk v1.11 usb_dcd_init()
-			 * leaves USBMODE.SLOM=0 (setup lockout active). hpm_sdk
-			 * v1.12 flips usb_dcd_init() to SLOM=1 and adds the
-			 * usb_dcd_{set,get}_sutw() accessors; when sdk_env moves to
-			 * v1.12 this block must switch to the SUTW tripwire copy
-			 * (see branch vendor/hpm5100-er-2026-07-31 for that code).
+			 * Do NOT "simplify" this back to a plain copy: under v1.11
+			 * (SLOM=0, no usb_dcd_{set,get}_sutw() at all) the correct
+			 * shape was the opposite order and no tripwire. The two are
+			 * bound to the SDK version, not to taste -- see
+			 * sdk_glue/west.yml for which sdk_env revision is pinned.
 			 */
-			memcpy(&setup, (const void *)&qhd0->setup_request, sizeof(setup));
 			usb_device_clear_setup_status(handle, edpt_setup_status);
+			do {
+				usb_dcd_set_sutw(handle->regs, true);
+				memcpy(&setup, (const void *)&qhd0->setup_request, sizeof(setup));
+			} while (!usb_dcd_get_sutw(handle->regs));
+			usb_dcd_set_sutw(handle->regs, false);
+
 			udc_hpm_handler_setup(dev, &setup);
 		}
 	}
