@@ -78,17 +78,37 @@ config HPM_SOC_CPU_FREQ_MHZ
 	default 600
 	range 24 600
 	help
-		PLL0 VCO frequency; CPU0 and CPU1 both run from PLL0CLK0 with
-		postdiv 1.0 and divider 1, so this is the core clock.
+		Core clock for CPU0 and CPU1, reached with PLL0CLK0's
+		post-divider. The VCO is left exactly as the BootROM preset
+		set it.
 
-		Safe to retune in isolation: per UM V0.8's default clock source
-		table, of the 73 CLK_TOP_* domains only CLK_TOP_CPU0 and
-		CLK_TOP_CPU1 are sourced from PLL0CLK0. AHB0, XPI0 (the XIP
-		flash!) and 57 other domains sit on PLL1CLK0 and are unaffected,
-		so the ADC convert-clock ceiling (RM 71.2.1.1) does not move.
+		This is a CEILING, not an exact value. The post-divider steps
+		in 0.2 increments -- index n divides by (1.0 + 0.2n) -- so from
+		the preset's 600 MHz VCO the reachable set is 600 / 500 /
+		428.6 / 375 / 333.3 / 300 MHz. soc_init_clock() picks the first
+		step at or below this number, so 400 lands on 375 and 480 lands
+		on 428.6. Rounding down is what keeps the VDD_SOC bin (selected
+		from this number against datasheet table 12) valid by
+		construction. Asking for less than about 41 MHz saturates the
+		divider and lands above the request, which is harmless only
+		because every voltage bin ceiling is far above that.
 
-		Must be a whole multiple of the 24 MHz crystal or
-		pllctlv2_init_pll_with_freq() lands on a fractional MFN.
+		Changing this moves the two cores and nothing else. Measured on
+		hpm6e00evk with `hs2clk`: of the SYSCTL clock nodes, exactly
+		two select a PLL0 output, and they are CLK_TOP_CPU0 and
+		CLK_TOP_CPU1. AHB0, XPI0 (the XIP flash!) and the rest of the
+		peripheral tree sit on PLL1CLK0, so the ADC convert-clock
+		ceiling (RM 71.2.1.1) does not move either.
+
+		Do NOT reach the target by retuning the VCO with
+		pllctlv2_init_pll_with_freq() instead. That was tried and it
+		broke UART0 outright -- see the comment in soc_init_clock().
+		HPM's own board support never writes MFI/MFN on this part.
+
+		Set it for MCUboot as well as the application when using
+		sysbuild (-Dmcuboot_CONFIG_HPM_SOC_CPU_FREQ_MHZ=...); a
+		mismatch leaves the bootloader and the app on different core
+		clocks, which is legal but makes every timing number ambiguous.
 
 		WARNING: the core1 8 kHz engine budget is 94 us (XInput) / 96 us
 		(DS4) of a 125 us period at 600 MHz. Scaling is roughly linear
