@@ -56,8 +56,18 @@ static void soc_init_clock(void)
     clock_add_to_group(clock_hdma, 0);
     clock_add_to_group(clock_xdma, 0);
     clock_add_to_group(clock_gpio, 0);
-    clock_add_to_group(clock_ptpc, 0);
     /* Motor Related */
+    clock_add_to_group(clock_pwm0, 0);
+#if !defined(CONFIG_HPM_SOC_GATE_UNUSED_CLOCKS)
+    /*
+     * Everything below is ungated only when the application asks for it.
+     * The stock list clocks the whole motor-control island plus PTPC on every
+     * boot; none of it has a devicetree node on the boards this fork carries,
+     * so leaving it clocked is pure static power. PWM0 stays above because it
+     * is the ADC TRGO source (see the trigger-pwm properties in the board
+     * overlays) -- do not fold it into this block.
+     */
+    clock_add_to_group(clock_ptpc, 0);
     clock_add_to_group(clock_qei0, 0);
     clock_add_to_group(clock_qei1, 0);
     clock_add_to_group(clock_qei2, 0);
@@ -66,7 +76,6 @@ static void soc_init_clock(void)
     clock_add_to_group(clock_qeo1, 0);
     clock_add_to_group(clock_qeo2, 0);
     clock_add_to_group(clock_qeo3, 0);
-    clock_add_to_group(clock_pwm0, 0);
     clock_add_to_group(clock_pwm1, 0);
     clock_add_to_group(clock_pwm2, 0);
     clock_add_to_group(clock_pwm3, 0);
@@ -81,6 +90,7 @@ static void soc_init_clock(void)
     clock_add_to_group(clock_clc0, 0);
     clock_add_to_group(clock_clc1, 0);
     clock_add_to_group(clock_emds, 0);
+#endif
     /* Connect Group0 to CPU0 */
     clock_connect_group_to_cpu(0, 0);
 

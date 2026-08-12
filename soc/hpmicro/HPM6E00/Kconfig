@@ -73,4 +73,20 @@ config SOC_ANDES_V5_PMA
 		matching of Andes V5 PMA is like RISC-V PMP NAPOT mode
 		(power-of-two alignment).
 
+config HPM_SOC_GATE_UNUSED_CLOCKS
+	bool "Leave unused peripheral clocks gated at boot"
+	default y
+	help
+		soc_init_clock() otherwise ungates the entire motor-control
+		island (QEI/QEO/RDC/MTG/VSC/CLC/PLB/SEI/EMDS), PWM1-3 and PTPC
+		on every boot. None of those has an enabled devicetree node on
+		the boards this fork carries, so clocking them is static power
+		for nothing.
+
+		PWM0 is NOT covered by this option: it is the ADC TRGO source
+		(trigger-pwm in the board overlays) and stays ungated always.
+
+		Set n to restore the stock HPMicro behaviour, e.g. when bringing
+		up a board that does use the motor peripherals.
+
 endif # SOC_SERIES_HPM6E00
