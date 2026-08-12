@@ -32,6 +32,14 @@ LOG_MODULE_REGISTER(udc_hpmicro, CONFIG_UDC_DRIVER_LOG_LEVEL);
 #define USB_HPM_MPS0		UDC_MPS0_64
 #define USB_HPM_EP0_SIZE	64
 
+/*
+ * The SETUP handler copies sizeof(struct usb_setup_packet) bytes straight out
+ * of the queue head's setup_request (dcd_qhd_t words 10-11, i.e. 8 bytes).
+ * Anything larger would over-read the QH into the next field.
+ */
+BUILD_ASSERT(sizeof(struct usb_setup_packet) == 8,
+	     "usb_setup_packet must match the 8-byte QH setup_request");
+
 #if defined(CONFIG_NOCACHE_MEMORY) && !defined(CONFIG_SOC_SERIES_HPM5100)
 #define HPM_UDC_USE_NOCACHE 1
 #else

@@ -238,7 +238,15 @@ static void hpmicro_adc16_start_channel(const struct device *dev)
 	 * dirty zero lines that may evict at any time and overwrite results the
 	 * ADC DMA has meanwhile written to RAM. Flush (writeback + invalidate)
 	 * so no dirty line is outstanding while the DMA runs; the ISR
-	 * invalidates again before reading.
+	 * invalidates again before reading. The writeback must not be dropped
+	 * for a plain invalidate: the zeroing is what clears the cycle bits the
+	 * seq-DMA protocol relies on.
+	 *
+	 * Only correct because the sequence is not running yet. With
+	 * config->trig_en the trigger mux is already live above, so a hardware
+	 * trigger landing between the memset and this flush would have its
+	 * results written back over. Nothing enables en-hw-trig today; revisit
+	 * this ordering before the first user does.
 	 */
 	l1c_dc_flush((uint32_t)data->seq_buffer, sizeof(data->seq_buffer));
 
