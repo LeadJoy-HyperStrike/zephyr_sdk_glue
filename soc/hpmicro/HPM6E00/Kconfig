@@ -105,10 +105,26 @@ config HPM_SOC_CPU_FREQ_MHZ
 		broke UART0 outright -- see the comment in soc_init_clock().
 		HPM's own board support never writes MFI/MFN on this part.
 
-		Set it for MCUboot as well as the application when using
-		sysbuild (-Dmcuboot_CONFIG_HPM_SOC_CPU_FREQ_MHZ=...); a
-		mismatch leaves the bootloader and the app on different core
-		clocks, which is legal but makes every timing number ambiguous.
+		Under sysbuild this reaches the DEFAULT image only. Passing
+		-DCONFIG_HPM_SOC_CPU_FREQ_MHZ=400 leaves MCUboot on 600, and
+		that asymmetry is the intended arrangement, not an oversight:
+
+		  - MCUboot is the recovery net. A clock configuration that has
+		    not been proven belongs in the image you can replace over
+		    USB, not in the one whose failure mode is ROM ISP.
+		  - It saves nothing. MCUboot runs for well under a second on a
+		    normal boot.
+		  - It costs something. ECDSA-P256 verification and the
+		    swap-using-scratch move over a 1536K slot both scale with
+		    the core clock, so a slower bootloader lengthens DFU and
+		    factory programming -- watch station timeouts.
+
+		The hazard is not the mismatch, it is an UNNOTICED mismatch:
+		this option silently applying to one image and not the other
+		is exactly how a broken low-frequency path first looked like
+		two unrelated bugs. To move MCUboot deliberately, pass
+		-Dmcuboot_CONFIG_HPM_SOC_CPU_FREQ_MHZ=... as well, and expect
+		the two images to report different core clocks until you do.
 
 		WARNING: the core1 8 kHz engine budget is 94 us (XInput) / 96 us
 		(DS4) of a 125 us period at 600 MHz. Scaling is roughly linear
