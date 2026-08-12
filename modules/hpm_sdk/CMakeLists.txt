@@ -37,6 +37,17 @@ foreach(line IN LISTS CONFIG_LINES)
     set(${HPMSOC_ENABLE} y)
 endforeach()
 
+if("${HPM_SOC_SERIES}" STREQUAL "HPM5100" AND "${HPM_SOC}" STREQUAL "HPM5151")
+    # HPM5151 uses GPTMRV2 register/IP model.
+    unset(HPMSOC_HAS_HPMSDK_GPTMR)
+    set(HPMSOC_HAS_HPMSDK_GPTMRV2 y)
+endif()
+
+# NOTE: the vendor HPM5100 drop redirected drivers/ to a side-by-side
+# sdk_env_v1.12.0_hpm5100_er_* tree because it assumed sdk_env stayed at
+# v1.11.0 (which has no HPM5100 support). sdk_env is now v1.12.1 with the
+# HPM5100 files overlaid, so HPM_SDK_DIR already provides them and the
+# redirect is gone.
 add_subdirectory(${HPM_SDK_DIR}/arch ${HPM_SDK_BINARY_DIR}/arch)
 add_subdirectory(${HPM_SDK_DIR}/soc ${HPM_SDK_BINARY_DIR}/soc)
 add_subdirectory(${HPM_SDK_DIR}/drivers ${HPM_SDK_BINARY_DIR}/drivers)

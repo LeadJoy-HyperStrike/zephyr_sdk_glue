@@ -1,0 +1,58 @@
+# Copyright (c) 2026 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+if SOC_SERIES_HPM5100
+
+config SOC_SERIES
+	default "HPM5100"
+
+config SYS_CLOCK_HW_CYCLES_PER_SEC
+	default 24000000
+
+config KERNEL_ENTRY
+	default "_start"
+
+config RISCV_GENERIC_TOOLCHAIN
+	default y if "$(ZEPHYR_TOOLCHAIN_VARIANT)" = "zephyr"
+	default n
+
+config ICACHE
+	default y
+
+# HPM5151 has no configurable PMA (see Kconfig), so SOC_ANDES_V5_PMA and with
+# it ARCH_HAS_NOCACHE_MEMORY_SUPPORT / NOCACHE_MEMORY are permanently off. The
+# UDC driver's cache-maintenance paths (HPM_UDC_USE_NOCACHE, HPM_UDC_DCD_SECTION)
+# therefore compile to nothing here, which would leave QHD/QTD and every USB DMA
+# buffer in plain cached RAM with no maintenance at all. Default D-cache off so
+# that is safe by construction instead of depending on every board/snippet conf
+# remembering CONFIG_DCACHE=n. Turn it back on only together with explicit l1c
+# maintenance on the DMA buffers.
+config DCACHE
+	default n
+
+config RISCV_SOC_INTERRUPT_INIT
+	default y
+
+config RISCV_GP
+	default y
+
+config 2ND_LVL_ISR_TBL_OFFSET
+	# PLIC parent IRQ is 11 on HPM5100; keep table offset aligned
+	# with 2ND_LVL_INTR_00_OFFSET to avoid negative aggregator index.
+	default 11
+
+config 2ND_LVL_INTR_00_OFFSET
+	default 11
+
+config MAX_IRQ_PER_AGGREGATOR
+	default 127
+
+config NUM_IRQS
+	# Must cover 2ND_LVL_ISR_TBL_OFFSET + PLIC ndev (72), otherwise
+	# plic_irq_handler can index past _sw_isr_table and corrupt RAM
+	# (timeout_list sits immediately before the ISR table).
+	default 83
+
+source "${ZEPHYR_SDK_GLUE_MODULE_DIR}/soc/hpmicro/HPM5100/Kconfig.defconfig.HPM51*"
+
+endif # SOC_SERIES_HPM5100

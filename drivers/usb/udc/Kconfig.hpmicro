@@ -7,6 +7,15 @@ config UDC_HPMICRO
 	bool "HPMicro USB Device controller driver"
 	default y
 	depends on DT_HAS_HPMICRO_HPM_UDC_ENABLED
+	# UDC_DRIVER is what makes Zephyr add drivers/usb/udc, i.e. what creates
+	# the drivers__usb__udc library this directory amends. Without this
+	# dependency a build that has the udc DT node enabled but no USB device
+	# stack (any plain sample on these boards) sets UDC_HPMICRO=y and dies at
+	# CMake configure time with "Cannot specify sources for target
+	# drivers__usb__udc which is not built by this project" instead of
+	# quietly building nothing. No-op for HS2: both the app and the MCUboot
+	# recovery image enable the next USB device stack.
+	depends on UDC_DRIVER
 	select HAS_HPMSDK_USB
 	select NOCACHE_MEMORY if ARCH_HAS_NOCACHE_MEMORY_SUPPORT
 	help

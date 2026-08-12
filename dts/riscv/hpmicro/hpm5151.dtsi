@@ -1,0 +1,9 @@
+/*
+ * Copyright 2026 HPMicro
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <hpmicro/hpm51xx.dtsi>
+/ {
+
+};

@@ -26,6 +26,13 @@ LOG_MODULE_REGISTER(spi_hpmicro);
 
 #define MAX_DATA_WIDTH		32  /* data width 1-32 bits */
 
+/*
+ * Keep the interrupt-driven path. The vendor HPM5100 drop flipped this to 0 to
+ * sidestep the broken base ISR, but 020893a/fbd01a0 fixed that ISR (bounded
+ * FIFO pump, thresholds, IRQs armed before start, drain on end). 0 is not a
+ * clean polling fallback either: four guards use #ifdef (always true) and one
+ * uses #if, which leaves a half-compiled hybrid.
+ */
 #define CONFIG_SPI_INTERRUPT_DRIVEN 1
 
 struct spi_hpm_config {

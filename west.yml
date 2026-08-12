@@ -39,7 +39,12 @@ manifest:
     - name: sdk_env
       repo-path: sdk_env
       path: sdk_env
-      revision: v1.11.0
+      # v1.12.1 官方 tag。HPM5100 支持不在官方发布里(v1.12.0/v1.12.1 都没有),
+      # 需在 checkout 之后把先楫 ER 包的 ~90 个 HPM5100 文件叠为 untracked 文件:
+      #   hpm_sdk/soc/HPM5100/**、hpm_sdk/boards/hpm5100evk/**、
+      #   hpm_sdk/boards/openocd/{hpm5100_all_in_one.cfg,soc/hpm5100.cfg,boards/hpm5100evk.cfg}
+      # 并跑 `west supply` 打 scripts/patch/hpm_sdk_v1.12.1/ 下的必需补丁。
+      revision: v1.12.1
       submodules: true
     - name: canopennode
       repo-path: canopennode

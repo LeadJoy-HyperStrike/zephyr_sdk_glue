@@ -19,6 +19,7 @@
 #include "../udc/udc_common.h"
 #include "hpm_clock_drv.h"
 #include "hpm_misc.h"
+#include "hpm_usb_drv.h"
 #include "hpm_usb_device.h"
 
 #include <zephyr/logging/log.h>
@@ -30,6 +31,31 @@ LOG_MODULE_REGISTER(udc_hpmicro, CONFIG_UDC_DRIVER_LOG_LEVEL);
  */
 #define USB_HPM_MPS0		UDC_MPS0_64
 #define USB_HPM_EP0_SIZE	64
+
+/*
+ * The SETUP handler copies sizeof(struct usb_setup_packet) bytes straight out
+ * of the queue head's setup_request (dcd_qhd_t words 10-11, i.e. 8 bytes).
+ * Anything larger would over-read the QH into the next field.
+ */
+BUILD_ASSERT(sizeof(struct usb_setup_packet) == 8,
+	     "usb_setup_packet must match the 8-byte QH setup_request");
+
+#if defined(CONFIG_NOCACHE_MEMORY) && !defined(CONFIG_SOC_SERIES_HPM5100)
+#define HPM_UDC_USE_NOCACHE 1
+#else
+#define HPM_UDC_USE_NOCACHE 0
+#endif
+
+/*
+ * HPM5151 USB DMA must use system-accessible SRAM (HRAM).
+ * Do not place QHD/QTD in DLM/DTCM: core_local_mem_to_sys_address() is
+ * identity on this SoC, and AHB cannot DMA into the DLM local window.
+ */
+#if !defined(CONFIG_SOC_SERIES_HPM5100)
+#define HPM_UDC_DCD_SECTION __attribute__((__section__(".nocache")))
+#else
+#define HPM_UDC_DCD_SECTION
+#endif
 
 struct udc_hpm_config {
 	void (*irq_enable_func)(const struct device *dev);
@@ -53,7 +79,7 @@ struct udc_hpm_data {
  * cache line size aligned and the buffer range cover multiple of cache line size block.
  * Need to change the usb stack to implement it, will try to implement it later.
  */
-#if defined(CONFIG_NOCACHE_MEMORY)
+#if HPM_UDC_USE_NOCACHE
 K_HEAP_DEFINE_NOCACHE(hpm_packet_alloc_pool, 16u * 2u * 1024u);
 
 /* allocate non-cached buffer for usb */
@@ -358,7 +384,7 @@ static int udc_hpm_ep_feed(const struct device *dev,
 
 		if (USB_EP_DIR_IS_OUT(cfg->addr)) {
 			len = net_buf_tailroom(buf);
-#if defined(CONFIG_NOCACHE_MEMORY)
+#if HPM_UDC_USE_NOCACHE
 			data = (len == 0 ? NULL : udc_hpm_nocache_alloc(len));
 			if (len != 0 && data == NULL) {
 				goto no_mem;
@@ -369,7 +395,7 @@ static int udc_hpm_ep_feed(const struct device *dev,
 			status = usb_device_edpt_xfer(handle, cfg->addr, data, len);
 		} else {
 			len = buf->len;
-#if defined(CONFIG_NOCACHE_MEMORY)
+#if HPM_UDC_USE_NOCACHE
 			data = (len == 0 ? NULL : udc_hpm_nocache_alloc(len));
 			if (len != 0 && data == NULL) {
 				goto no_mem;
@@ -531,7 +557,7 @@ static int udc_hpm_handler_ctrl_out(const struct device *dev, struct net_buf *bu
 	uint32_t len;
 
 	len = MIN(net_buf_tailroom(buf), hpm_len);
-#if defined(CONFIG_NOCACHE_MEMORY)
+#if HPM_UDC_USE_NOCACHE
 	memcpy(net_buf_tail(buf), hpm_buf, len);
 	udc_hpm_nocache_free(hpm_buf);
 #endif
@@ -562,7 +588,7 @@ static int udc_hpm_handler_ctrl_in(const struct device *dev, struct net_buf *buf
 	len = MIN(buf->len, hpm_len);
 	buf->data += len;
 	buf->len -= len;
-#if defined(CONFIG_NOCACHE_MEMORY)
+#if HPM_UDC_USE_NOCACHE
 	udc_hpm_nocache_free(hpm_buf);
 #endif
 
@@ -597,7 +623,7 @@ static int udc_hpm_handler_non_ctrl_in(const struct device *dev, uint8_t ep,
 	buf->data += len;
 	buf->len -= len;
 
-#if defined(CONFIG_NOCACHE_MEMORY)
+#if HPM_UDC_USE_NOCACHE
 	udc_hpm_nocache_free(hpm_buf);
 #endif
 	err = udc_submit_ep_event(dev, buf, 0);
@@ -613,12 +639,12 @@ static int udc_hpm_handler_non_ctrl_out(const struct device *dev, uint8_t ep,
 	uint32_t len;
 
 	len = MIN(net_buf_tailroom(buf), hpm_len);
-#if defined(CONFIG_NOCACHE_MEMORY)
+#if HPM_UDC_USE_NOCACHE
 	memcpy(net_buf_tail(buf), hpm_buf, len);
 #endif
 	net_buf_add(buf, len);
 
-#if defined(CONFIG_NOCACHE_MEMORY)
+#if HPM_UDC_USE_NOCACHE
 	udc_hpm_nocache_free(hpm_buf);
 #endif
 	err = udc_submit_ep_event(dev, buf, 0);
@@ -731,8 +757,13 @@ static void udc_hpm_isr(const struct device *dev)
 	int_status &= usb_device_interrupts(handle);
 	usb_device_clear_status_flags(handle, int_status);
 
+	if (int_status == 0U) {
+		return;
+	}
+
+	/* Never printk/LOG from this ISR: ISR stack is tight on HPM5100. */
+
 	if (int_status & USB_USBINTR_UEE_MASK) {
-		LOG_DBG("usbd intr error!\r\n");
 		udc_submit_event(dev, UDC_EVT_ERROR, -EIO);
 	}
 
@@ -749,6 +780,7 @@ static void udc_hpm_isr(const struct device *dev)
 			fastpath.bus_cb(fastpath.bus_ctx);
 		}
 #endif
+		/* Prime EP0 QH first, then re-open EP0 like other Zephyr UDC drivers. */
 		usb_device_bus_reset(handle, USB_HPM_EP0_SIZE);
 		cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
 		if (cfg->stat.enabled) {
@@ -761,27 +793,36 @@ static void udc_hpm_isr(const struct device *dev)
 		if (udc_ep_enable_internal(dev, USB_CONTROL_EP_OUT,
 					USB_EP_TYPE_CONTROL,
 					USB_HPM_EP0_SIZE, 0)) {
-			LOG_ERR("Failed to enable control endpoint");
-			return ;
+			return;
 		}
 
 		if (udc_ep_enable_internal(dev, USB_CONTROL_EP_IN,
 					USB_EP_TYPE_CONTROL,
 					USB_HPM_EP0_SIZE, 0)) {
-			LOG_ERR("Failed to enable control endpoint");
-			return ;
+			return;
 		}
 		udc_submit_event(dev, UDC_EVT_RESET, 0);
+		/*
+		 * Drop only the transfer-complete work for this pass:
+		 * usb_device_bus_reset() just memset() the whole dcd_data, so
+		 * any endpoint completion latched before the reset now refers
+		 * to wiped QH/QTD state. The vendor drop used a bare `return`
+		 * here, which also swallowed SLE and PCE -- and every status
+		 * bit was already W1C-cleared at the top of this ISR, so the
+		 * hardware never re-raises them. Losing PCE means losing the
+		 * VBUS_REMOVED / VBUS_READY edge, i.e. the fastpath bus-death
+		 * kill (cec27c0) would not fire when a reset and a port change
+		 * coalesce into one interrupt.
+		 */
+		int_status &= ~USB_USBINTR_UE_MASK;
 	}
 
 	if (int_status & USB_USBINTR_SLE_MASK) {
-		if (usb_device_get_suspend_status(handle)) {
-			/* Note: Host may delay more than 3 ms before and/or after bus reset before doing enumeration. */
-			if (usb_device_get_address(handle)) {
-				udc_set_suspended(dev, true);
-				udc_submit_event(dev, UDC_EVT_SUSPEND, 0);
-			}
-		} else {
+		/* Match CherryUSB: ignore early suspend before SET_ADDRESS. */
+		if (usb_device_get_suspend_status(handle) &&
+		    usb_device_get_address(handle)) {
+			udc_set_suspended(dev, true);
+			udc_submit_event(dev, UDC_EVT_SUSPEND, 0);
 		}
 	}
 
@@ -821,9 +862,16 @@ static void udc_hpm_isr(const struct device *dev)
 					/* Failed QTD also get ENDPTCOMPLETE set */
 					dcd_qhd_t *p_qhd = usb_device_qhd_get(handle, ep_idx);
 					dcd_qtd_t *p_qtd = p_qhd->attached_qtd;
+					uint32_t qtd_walk_guard = 0;
+
 					while (1) {
+						if ((p_qtd == NULL) ||
+						    (qtd_walk_guard++ > USB_SOC_DCD_MAX_QTD_COUNT)) {
+							ep_cb_req = false;
+							break;
+						}
+
 						if (p_qtd->halted || p_qtd->xact_err || p_qtd->buffer_err) {
-							LOG_DBG("usbd transfer error!\r\n");
 							ep_cb_req = false;
 							break;
 						} else if (p_qtd->active) {
@@ -832,14 +880,26 @@ static void udc_hpm_isr(const struct device *dev)
 						} else {
 							transfer_len += p_qtd->expected_bytes - p_qtd->total_bytes;
 						}
-						
+
 						if (p_qtd->next == USB_SOC_DCD_QTD_NEXT_INVALID) {
 							break;
 						} else {
-							p_qtd = (dcd_qtd_t *)p_qtd->next;
+							uintptr_t next_ptr = (uintptr_t)p_qtd->next;
+							uintptr_t qtd_base =
+								(uintptr_t)&handle->dcd_data->qtd[0];
+							uintptr_t qtd_end =
+								(uintptr_t)&handle->dcd_data->qtd[USB_SOC_DCD_MAX_QTD_COUNT];
+
+							if ((next_ptr < qtd_base) || (next_ptr >= qtd_end) ||
+							    ((next_ptr % __alignof__(dcd_qtd_t)) != 0U)) {
+								ep_cb_req = false;
+								break;
+							}
+
+							p_qtd = (dcd_qtd_t *)next_ptr;
 						}
 					}
-					
+
 					if (ep_cb_req) {
 						uint8_t const ep_addr = (ep_idx / 2) | ((ep_idx & 0x01) ? 0x80 : 0);
 #if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
@@ -868,13 +928,26 @@ static void udc_hpm_isr(const struct device *dev)
 			struct usb_setup_packet setup;
 
 			/*
-			 * ENDPTSETUPSTAT must be acknowledged after copying the
-			 * setup payload from the queue head. Clearing it first can
-			 * release the setup lockout and leave the software seeing a
-			 * zeroed/stale setup packet.
+			 * Setup Data Buffer Tripwire, mandated by the hpm_sdk
+			 * version in use. hpm_sdk v1.12 usb_dcd_init() sets
+			 * USBMODE.SLOM=1, i.e. the hardware setup lockout is OFF
+			 * and software MUST protect the copy itself: ack
+			 * ENDPTSETUPSTAT, then re-copy under SUTW until SUTW is
+			 * still set, which proves no new SETUP landed mid-copy.
+			 *
+			 * Do NOT "simplify" this back to a plain copy: under v1.11
+			 * (SLOM=0, no usb_dcd_{set,get}_sutw() at all) the correct
+			 * shape was the opposite order and no tripwire. The two are
+			 * bound to the SDK version, not to taste -- see
+			 * sdk_glue/west.yml for which sdk_env revision is pinned.
 			 */
-			memcpy(&setup, (const void *)&qhd0->setup_request, sizeof(setup));
 			usb_device_clear_setup_status(handle, edpt_setup_status);
+			do {
+				usb_dcd_set_sutw(handle->regs, true);
+				memcpy(&setup, (const void *)&qhd0->setup_request, sizeof(setup));
+			} while (!usb_dcd_get_sutw(handle->regs));
+			usb_dcd_set_sutw(handle->regs, false);
+
 			udc_hpm_handler_setup(dev, &setup);
 		}
 	}
@@ -1014,7 +1087,13 @@ static int udc_hpm_enable(const struct device *dev)
 	struct udc_hpm_data *priv = udc_get_private(dev);
 	usb_device_handle_t *handle = &priv->handle;
 
+	/*
+	 * Soft-connect only here. Zephyr opens EP0 right after udc_enable();
+	 * priming QH now means the first host reset/setup sees a valid EP0 list.
+	 */
+	usb_device_bus_reset(handle, USB_HPM_EP0_SIZE);
 	handle->regs->USBCMD |= USB_USBCMD_RS_MASK;
+	usb_device_connect(handle);
 
 	return 0;
 }
@@ -1024,6 +1103,7 @@ static int udc_hpm_disable(const struct device *dev)
 	struct udc_hpm_data *priv = udc_get_private(dev);
 	usb_device_handle_t *handle = &priv->handle;
 
+	usb_device_disconnect(handle);
 	handle->regs->USBCMD &= ~USB_USBCMD_RS_MASK;
 
 	return 0;
@@ -1036,12 +1116,35 @@ static int udc_hpm_init(const struct device *dev)
 	usb_device_handle_t *handle = &priv->handle;
 	uint32_t int_mask;
 
-	int_mask = (USB_USBINTR_UE_MASK | USB_USBINTR_UEE_MASK | USB_USBINTR_SLE_MASK |
-				USB_USBINTR_PCE_MASK | USB_USBINTR_URE_MASK);
+	/* Match CherryUSB usb_dc_init() interrupt mask. */
+	int_mask = (USB_USBINTR_UE_MASK | USB_USBINTR_UEE_MASK |
+				USB_USBINTR_PCE_MASK | USB_USBINTR_URE_MASK |
+				USB_USBINTR_SLE_MASK);
 
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+	/*
+	 * HPM5100 EVK bring-up only: host-port power polarity, settle time,
+	 * internal-VBUS session detect (match board_init_usb()).
+	 *
+	 * MUST NOT run on HS2/HPM6E00: usb_phy_using_internal_vbus() makes the
+	 * PHY ignore the VBUS pin, which kills the VBUS-removed/URE bus-death
+	 * detection the fastpath kill switch (cec27c0) and the auto-disconnect
+	 * sleep design rely on; the 100 ms busy-wait would also stall boot of
+	 * both the app and the MCUboot recovery image.
+	 */
+	usb_hcd_set_power_ctrl_polarity(config->base, true);
+	k_busy_wait(100 * 1000);
+	usb_phy_using_internal_vbus(config->base);
+#endif
+
+	/* Leave soft-connect OFF until udc_enable() so the host cannot race
+	 * EP0 open (Zephyr opens EP0 right after udc_enable).
+	 */
 	usb_device_init(handle, int_mask);
+	/* usb_device_init() connects; drop pull-up until stack enables us. */
+	config->base->USBCMD &= ~USB_USBCMD_RS_MASK;
+	usb_device_bus_reset(handle, USB_HPM_EP0_SIZE);
 
-	/* enable USB interrupt */
 	config->irq_enable_func(dev);
 
 	LOG_DBG("Initialized USB controller %x", (uint32_t)config->base);
@@ -1127,12 +1230,30 @@ static int udc_hpm_driver_preinit(const struct device *dev)
 	/* Requires udc_hpm_host_wakeup() implementation */
 	data->caps.rwup = false;
 	data->caps.mps0 = USB_HPM_MPS0;
+	/* Match CherryUSB cdc_acm_vcom default CONFIG_USB_HS. */
 	data->caps.hs = true;
+	/* USBADRA: address takes effect after status stage. */
+	data->caps.addr_before_status = true;
 
 	handle->regs = config->base;
 	handle->dcd_data = config->dcd_data;
 
 	clock_add_to_group(config->clock_name, 0);
+
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+	/*
+	 * Early board_init_usb_dp_dm_pins() equivalent: drop DP/DM pulldown
+	 * before usb_phy_init() inside usb_device_init() reconfigures PHY.
+	 *
+	 * HPM5100 only, same gate as the PHY/VBUS block in udc_hpm_init():
+	 * in the HPM SDK this call appears solely in the hpm5100evk /
+	 * hpm5300evk / hpm5301evklite board.c, never in hpm6e00evk's, and the
+	 * PHY_CTRL0 bits it writes have no named definition in either SoC's
+	 * hpm_usb_regs.h. Do not enable it on the HS2 8 kHz path without a
+	 * bench measurement.
+	 */
+	usb_phy_disable_dp_dm_pulldown(config->base);
+#endif
 
 	pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
 
@@ -1179,7 +1300,10 @@ static const struct udc_api udc_hpm_api = {
 	static struct udc_ep_config							\
 		ep_cfg_in##n[DT_INST_PROP(n, num_bidir_endpoints)];			\
 											\
-	static __attribute__((__section__(".nocache"))) ATTR_ALIGN(USB_SOC_DCD_DATA_RAM_ADDRESS_ALIGNMENT) dcd_data_t _dcd_data##n;	\
+	/* Match CherryUSB: keep QHD/QTD out of cached system SRAM when possible. */	\
+	static HPM_UDC_DCD_SECTION							\
+		ATTR_ALIGN(USB_SOC_DCD_DATA_RAM_ADDRESS_ALIGNMENT)			\
+		dcd_data_t _dcd_data##n;						\
 											\
 	PINCTRL_DT_INST_DEFINE(n);							\
 											\
