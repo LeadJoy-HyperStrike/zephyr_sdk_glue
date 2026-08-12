@@ -77,6 +77,7 @@ struct uart_hpm_cfg {
 	UART_Type *base;
 	uint32_t clock_name;
 	uint32_t clock_src;
+	uint32_t clock_div;
 	uint32_t parity;
 	uint32_t baud_rate;
 	uint8_t flow_ctrl;
@@ -250,7 +251,25 @@ static int uart_hpm_configure_init(const struct device *dev, const struct uart_c
 	// }
 #endif
 	uart_default_config(base, &uart_config);
-	clock_set_source_divider(config->clock_name, config->clock_src, 1U);
+	/*
+	 * Honour the divider cell from the devicetree. This driver used to
+	 * hardcode 1 and drop the cell, which every other HPM driver in this
+	 * tree reads (adc12, adc16, ethernet, i2c, i2s, spi, camera, mipi_csi
+	 * all take DT_INST_CLOCKS_CELL(.., div)); the binding has declared
+	 * three cells -- name, src, div -- the whole time.
+	 *
+	 * It is not cosmetic. The SoC dts asks for PLL1CLK0 / 10, and
+	 * HPM6E00 datasheet V0.11 section 4 caps CLK_TOP_URT0..URT7 at
+	 * 80 MHz for the full 1.05V..1.30V VDD_SOC range. With PLL1CLK0 at
+	 * 800 MHz the hardcoded divider ran that clock node at 10x its rated
+	 * maximum. It happened to work while the cores sat at the SDK default
+	 * 600 MHz, and stopped working the moment the core clock moved:
+	 * MCUboot and the app both transmitted at roughly 1/30 of the
+	 * programmed baud rate, on a UART whose registers still read back a
+	 * perfectly consistent mux/divider/PLL configuration -- the clock node
+	 * simply could not deliver what those registers described.
+	 */
+	clock_set_source_divider(config->clock_name, config->clock_src, config->clock_div);
 	clock_add_to_group(config->clock_name, 0);
 	uart_config.src_freq_in_hz = clock_get_frequency(config->clock_name);
 	uart_config.baudrate = cfg->baudrate;
@@ -1025,6 +1044,7 @@ static const struct uart_driver_api uart_hpm_driver_api = {
 			.base = (UART_Type *)DT_INST_REG_ADDR(n),	\
 			.clock_name = DT_INST_CLOCKS_CELL(n, name),	\
 			.clock_src = DT_INST_CLOCKS_CELL(n, src),	\
+			.clock_div = DT_INST_CLOCKS_CELL(n, div),	\
 			.parity = DT_INST_ENUM_IDX_OR(n, parity, UART_CFG_PARITY_NONE),	\
 			.loopback_en = DT_INST_PROP(n, loopback),				\
 			.baud_rate = DT_INST_PROP(n, current_speed),	\
