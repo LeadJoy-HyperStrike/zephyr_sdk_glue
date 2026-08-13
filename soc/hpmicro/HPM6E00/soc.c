@@ -59,6 +59,19 @@ static void soc_init_clock(void)
     /* Motor Related */
     clock_add_to_group(clock_pwm0, 0);
     /*
+     * WARNING before you turn CONFIG_HPM_SOC_GATE_UNUSED_CLOCKS back on:
+     * gating this list KILLS THE ANALOG STICKS. The ADC trigger chain runs
+     * PWM0 TRGO -> TRGM0 -> ADC STRGI, and HPM_TRGM0_BASE (0xF047C000) lives
+     * inside this island's address block -- between HPM_SEI_BASE
+     * (0xF0470000) and HPM_MTG0_BASE (0xF0490000). TRGM has no
+     * sysctl_resource_* entry of its own, so it is clocked with its
+     * neighbours and goes away with them. Nothing catches it: TRGM has no
+     * devicetree node, the ADC driver reaches it through the raw trig-base
+     * address, and `hs2clk` reports "0 unexpected" because a resource-less
+     * block cannot appear in that readback. Measured on hpm6e00evk with the
+     * internal AFE. The option also measured no supply-current change at
+     * all, which is why it now defaults to n.
+     *
      * The motor-control island (QEI/QEO/RDC/MTG/VSC/CLC/PLB/SEI/EMDS), PWM1-3
      * and PTPC have no enabled devicetree node on the boards this fork carries.
      *

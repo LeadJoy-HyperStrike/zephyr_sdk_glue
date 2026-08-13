@@ -134,13 +134,40 @@ config HPM_SOC_CPU_FREQ_MHZ
 
 config HPM_SOC_GATE_UNUSED_CLOCKS
 	bool "Leave unused peripheral clocks gated at boot"
-	default y
+	default n
 	help
-		soc_init_clock() otherwise ungates the entire motor-control
-		island (QEI/QEO/RDC/MTG/VSC/CLC/PLB/SEI/EMDS), PWM1-3 and PTPC
-		on every boot. None of those has an enabled devicetree node on
-		the boards this fork carries, so clocking them is static power
-		for nothing.
+		Gates the motor-control island (QEI/QEO/RDC/MTG/VSC/CLC/PLB/
+		SEI/EMDS), PWM1-3 and PTPC, none of which has an enabled
+		devicetree node on the boards this fork carries.
+
+		DEFAULT IS n BECAUSE THIS BROKE THE STICKS. Measured on
+		hpm6e00evk with the internal AFE: with the option on, the analog
+		sticks read dead. The ADC trigger chain is PWM0 TRGO -> TRGM0 ->
+		ADC STRGI (trig-base/trig-input-src/trig-num in the board
+		overlays), and HPM_TRGM0_BASE 0xF047C000 sits inside the motor
+		island's address block, between HPM_SEI_BASE 0xF0470000 and
+		HPM_MTG0_BASE 0xF0490000. TRGM has NO sysctl_resource_* of its
+		own, so it is clocked with its neighbours -- and removing them
+		from group 0 takes the trigger mux with them.
+
+		Read the selection rule that failed before re-enabling this.
+		"Nothing in the devicetree uses it" is NOT a safe criterion:
+		TRGM has no devicetree node and no clock binding at all. The
+		ADC driver reaches it through the raw base address from
+		trig-base and writes its registers directly, so nothing in the
+		system ever declares that it needs TRGM's clock. Every check
+		passed: four board configurations built clean, and `hs2clk`
+		reported "0 unexpected" because TRGM has no resource id and is
+		invisible to that readback.
+
+		And it bought nothing measurable. Bench A/B on hpm6e00evk found
+		no detectable change in supply current with the option on. The
+		only lever that moved power on this part was the VDD_SOC bin,
+		which CONFIG_HPM_SOC_CPU_FREQ_MHZ selects.
+
+		If you do re-enable it: verify the analog sticks, not just boot
+		and enumeration, and treat any peripheral reached by a raw base
+		address as clocked-by-someone-else until proven otherwise.
 
 		PWM0 is NOT covered by this option: it is the ADC TRGO source
 		(trigger-pwm in the board overlays) and stays ungated always.
