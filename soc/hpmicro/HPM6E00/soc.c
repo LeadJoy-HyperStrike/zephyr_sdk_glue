@@ -150,7 +150,6 @@ static void soc_init_clock(void)
      */
     pcfg_dcdc_set_voltage(HPM_PCFG, 1275);
 
-#if CONFIG_HPM_SOC_CPU_FREQ_MHZ != 600
     /*
      * Divide PLL0CLK0 down with the post-divider. The VCO -- MFI/MFN/MFD --
      * is left exactly as sysctl_clock_set_preset(HPM_SYSCTL, 2) established
@@ -185,6 +184,18 @@ static void soc_init_clock(void)
      * on 375, 480 lands on 428.6. Rounding down also keeps the voltage bin
      * chosen above valid by construction -- it was selected for the request,
      * and the part ends up slower than that.
+     *
+     * This runs unconditionally, including for the 600 MHz default where it
+     * resolves to post-divider 1.0. Skipping it there would make the default
+     * build mean "leave whatever the previous image set", and the previous
+     * image is not always the BootROM: MCUboot and the application carry
+     * this option independently, so a 375 MHz bootloader chainloading a
+     * 600 MHz application would leave the cores at 375 while the application
+     * raised VDD_SOC to the 600 MHz bin -- not dangerous, but silently wrong
+     * and invisible without `hs2clk`. Writing the divider every time makes
+     * the sequence idempotent and self-correcting from any entry state.
+     * Raising the frequency is safe here because the voltage was already
+     * parked at 1275 mV above.
      */
     {
         uint64_t vco = pllctlv2_get_pll_freq_in_hz(HPM_PLLCTLV2, PLLCTLV2_PLL_PLL0);
@@ -199,7 +210,6 @@ static void soc_init_clock(void)
         pllctlv2_set_postdiv(HPM_PLLCTLV2, PLLCTLV2_PLL_PLL0, pllctlv2_clk0,
                              (pllctlv2_div_t)idx);
     }
-#endif
 
     /* Set CPU clock to CONFIG_HPM_SOC_CPU_FREQ_MHZ (default 600 MHz) */
     clock_set_source_divider(clock_cpu0, clk_src_pll0_clk0, 1);
