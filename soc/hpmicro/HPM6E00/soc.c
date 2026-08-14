@@ -13,6 +13,7 @@
 #include "hpm_clock_drv.h"
 #include "hpm_pllctlv2_drv.h"
 #include "hpm_pcfg_drv.h"
+#include "hpm_gated_clocks.h"
 #ifdef CONFIG_NOCACHE_MEMORY
 #include <zephyr/linker/linker-defs.h>
 #include "hpm_pmp_drv.h"
@@ -59,21 +60,43 @@ static void soc_init_clock(void)
     /* Motor Related */
     clock_add_to_group(clock_pwm0, 0);
     /*
-     * WARNING before you turn CONFIG_HPM_SOC_GATE_UNUSED_CLOCKS back on:
-     * gating this list KILLS THE ANALOG STICKS. The ADC trigger chain runs
-     * PWM0 TRGO -> TRGM0 -> ADC STRGI, and HPM_TRGM0_BASE (0xF047C000) lives
-     * inside this island's address block -- between HPM_SEI_BASE
-     * (0xF0470000) and HPM_MTG0_BASE (0xF0490000). TRGM has no
-     * sysctl_resource_* entry of its own, so it is clocked with its
-     * neighbours and goes away with them. Nothing catches it: TRGM has no
-     * devicetree node, the ADC driver reaches it through the raw trig-base
-     * address, and `hs2clk` reports "0 unexpected" because a resource-less
-     * block cannot appear in that readback. Measured on hpm6e00evk with the
-     * internal AFE. The option also measured no supply-current change at
-     * all, which is why it now defaults to n.
+     * EMDS is the motor island's MASTER CLOCK GATE, not another idle motor
+     * peripheral, and it must stay on for the analog sticks to work.
      *
-     * The motor-control island (QEI/QEO/RDC/MTG/VSC/CLC/PLB/SEI/EMDS), PWM1-3
-     * and PTPC have no enabled devicetree node on the boards this fork carries.
+     * UM V0.8 chapter 41 (p783) lists 互联管理器 TRGM as part of the 电动控制
+     * 系统 and then states the rule outright: "使用任何电动控制系统的模块前应首先
+     * 开启EMDS 资源节点以使能电动控制系统时钟". Chapter 14's register table
+     * (p253) names RESOURCE[EMDS] the "motor misc 资源寄存器" -- the resource
+     * covering the island's blocks that have no entry of their own, which is
+     * exactly TRGM's situation (no sysctl_resource_trgm exists in
+     * hpm_sysctl_drv.h).
+     *
+     * This is why gating the list below used to KILL THE ANALOG STICKS:
+     * clock_emds was IN it, so the option shut the island's master gate and
+     * took TRGM -- and with it PWM0 TRGO -> TRGM0 -> ADC STRGI -- down, while
+     * PWM0's own resource stayed enabled and looked perfectly healthy.
+     * Nothing caught it: TRGM has no devicetree node, the ADC driver reaches
+     * it through the raw trig-base address (0xF047C000, between HPM_SEI_BASE
+     * 0xF0470000 and HPM_MTG0_BASE 0xF0490000), and `hs2clk` reports "0
+     * unexpected" because a resource-less block cannot appear in that
+     * readback. Measured dead on hpm6e00evk with the internal AFE.
+     *
+     * Keep this add unconditional. Gating the individually-resourced motor
+     * IPs below is safe; gating their master is not.
+     */
+    clock_add_to_group(clock_emds, 0);
+    /*
+     * The motor-control island (QEI/QEO/RDC/MTG/VSC/CLC/PLB/SEI), PWM1-3 and
+     * PTPC have no enabled devicetree node on the boards this fork carries,
+     * and each has its own sysctl resource, so removing them leaves TRGM and
+     * PWM0 clocked through EMDS above.
+     *
+     * Tempering the expectation: with clock_emds still in this list the
+     * option measured NO detectable supply-current change (and that was with
+     * the sticks dead, i.e. with the ADC chain stopped too), so the island
+     * looks cheap to leave running. The fix above makes the option SAFE; it
+     * does not make it worthwhile. Re-measure with live sticks before
+     * defaulting it to y.
      *
      * These MUST be driven with clock_remove_from_group(): the group registers
      * are set-only from software's point of view (clock_add_to_group() ends in
@@ -88,17 +111,19 @@ static void soc_init_clock(void)
      * PWM0 is deliberately outside this list: it is the ADC TRGO source (see
      * trigger-pwm in the board overlays) and must stay clocked.
      */
+    /*
+     * The list itself lives in hpm_gated_clocks.h. It is a shared X-macro and
+     * not a local array because the application's `hs2clk` readback needs the
+     * same list, and the hand-transcribed copy it used to keep had already
+     * drifted -- 23 entries against a much longer reality, and still expecting
+     * EMDS to be off after EMDS became unconditionally on. The admission
+     * criteria, the in-use set that must never appear, and the
+     * deliberately-withheld set with each one's reason are documented there.
+     */
     static const clock_name_t unused_clocks[] = {
-        clock_ptpc,
-        clock_qei0, clock_qei1, clock_qei2, clock_qei3,
-        clock_qeo0, clock_qeo1, clock_qeo2, clock_qeo3,
-        clock_pwm1, clock_pwm2, clock_pwm3,
-        clock_rdc0, clock_rdc1,
-        clock_plb0, clock_sei0,
-        clock_mtg0, clock_mtg1,
-        clock_vsc0, clock_vsc1,
-        clock_clc0, clock_clc1,
-        clock_emds,
+#define HPM_GATED_CLOCK_ENTRY(n) clock_##n,
+        HPM_GATED_CLOCK_LIST(HPM_GATED_CLOCK_ENTRY)
+#undef HPM_GATED_CLOCK_ENTRY
     };
 
     for (uint32_t i = 0; i < ARRAY_SIZE(unused_clocks); i++) {

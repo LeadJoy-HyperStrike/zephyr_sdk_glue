@@ -137,37 +137,48 @@ config HPM_SOC_GATE_UNUSED_CLOCKS
 	default n
 	help
 		Gates the motor-control island (QEI/QEO/RDC/MTG/VSC/CLC/PLB/
-		SEI/EMDS), PWM1-3 and PTPC, none of which has an enabled
-		devicetree node on the boards this fork carries.
+		SEI), PWM1-3 and PTPC, none of which has an enabled devicetree
+		node on the boards this fork carries. EMDS is NOT in that list
+		any more -- see below.
 
-		DEFAULT IS n BECAUSE THIS BROKE THE STICKS. Measured on
-		hpm6e00evk with the internal AFE: with the option on, the analog
-		sticks read dead. The ADC trigger chain is PWM0 TRGO -> TRGM0 ->
-		ADC STRGI (trig-base/trig-input-src/trig-num in the board
-		overlays), and HPM_TRGM0_BASE 0xF047C000 sits inside the motor
-		island's address block, between HPM_SEI_BASE 0xF0470000 and
-		HPM_MTG0_BASE 0xF0490000. TRGM has NO sysctl_resource_* of its
-		own, so it is clocked with its neighbours -- and removing them
-		from group 0 takes the trigger mux with them.
+		THIS USED TO KILL THE ANALOG STICKS; root cause found and fixed
+		2026-08-13. clock_emds was in the gated list, and EMDS is the
+		motor island's MASTER clock gate rather than one more idle
+		peripheral: UM V0.8 chapter 41 (p783) lists 互联管理器 TRGM as
+		part of the 电动控制系统 and states "使用任何电动控制系统的模块前
+		应首先开启EMDS 资源节点以使能电动控制系统时钟", while chapter 14's
+		register table (p253) names RESOURCE[EMDS] the "motor misc
+		资源寄存器" -- the resource covering island blocks with no entry
+		of their own, which is exactly TRGM (there is no
+		sysctl_resource_trgm). Gating EMDS therefore cut PWM0 TRGO ->
+		TRGM0 -> ADC STRGI while PWM0's own resource stayed enabled and
+		looked healthy. soc_init_clock() now adds clock_emds
+		unconditionally, and every remaining entry owns its resource.
 
-		Read the selection rule that failed before re-enabling this.
-		"Nothing in the devicetree uses it" is NOT a safe criterion:
-		TRGM has no devicetree node and no clock binding at all. The
-		ADC driver reaches it through the raw base address from
-		trig-base and writes its registers directly, so nothing in the
-		system ever declares that it needs TRGM's clock. Every check
-		passed: four board configurations built clean, and `hs2clk`
-		reported "0 unexpected" because TRGM has no resource id and is
-		invisible to that readback.
+		IT DOES PAY, and the earlier claim that it did not is retired.
+		Bench 2026-08-13 on hs2prod: 0.9 W -> 0.7 W with the list
+		extended past the motor island. The old "no detectable change
+		in supply current" reading was not wrong so much as scoped to
+		the wrong blocks -- it only ever covered the motor peripherals,
+		which are idle logic with nothing toggling, and it was taken
+		with the sticks already dead so the ADC chain was stopped too.
+		The blocks that moved the needle are the ordinary peripherals
+		nobody had touched: 8x MCAN first, then the UART/I2C/SPI/GPTMR
+		siblings.
 
-		And it bought nothing measurable. Bench A/B on hpm6e00evk found
-		no detectable change in supply current with the option on. The
-		only lever that moved power on this part was the VDD_SOC bin,
-		which CONFIG_HPM_SOC_CPU_FREQ_MHZ selects.
+		STILL DEFAULTS TO n only because the list is still growing and
+		each extension needs its own stick check. Flip it to y once the
+		current list has been through a bench run.
 
-		If you do re-enable it: verify the analog sticks, not just boot
-		and enumeration, and treat any peripheral reached by a raw base
-		address as clocked-by-someone-else until proven otherwise.
+		Before flipping this to y: verify the analog sticks, not just
+		boot and enumeration, and treat any peripheral reached by a raw
+		base address as clocked-by-someone-else until proven otherwise.
+		That selection rule is what failed the first time. "Nothing in
+		the devicetree uses it" is NOT a safe criterion: TRGM has no
+		node and no clock binding at all, the ADC driver reaches it
+		through the raw trig-base address, four board configurations
+		built clean, and `hs2clk` reported "0 unexpected" because a
+		resource-less block is invisible to that readback.
 
 		PWM0 is NOT covered by this option: it is the ADC TRGO source
 		(trigger-pwm in the board overlays) and stays ungated always.
