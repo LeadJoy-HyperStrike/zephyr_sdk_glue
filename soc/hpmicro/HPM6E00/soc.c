@@ -173,7 +173,18 @@ static void soc_init_clock(void)
      * pcfg_dcdc_set_voltage(HPM_PCFG, 1275) immediately before
      * init_board_clock_source() -- with the step-down added on the far side.
      */
+    /*
+     * Skipped when VDD_SOC comes from an external regulator: with no
+     * inductor on DCDC_LP this call HANGS. Both branches of
+     * pcfg_dcdc_set_voltage() end in `while (!pcfg_dcdc_is_stable())`
+     * with no timeout, and a converter that cannot regulate never gets
+     * there. We are inside irq_lock() and ahead of console init, so the
+     * hang is completely mute -- that is exactly how PS4_V0B presented
+     * (BootROM ISP fine, every image of ours dead).
+     */
+#if !defined(CONFIG_HPM_SOC_VDD_SOC_EXTERNAL)
     pcfg_dcdc_set_voltage(HPM_PCFG, 1275);
+#endif
 
     /*
      * Divide PLL0CLK0 down with the post-divider. The VCO -- MFI/MFN/MFD --
@@ -244,10 +255,18 @@ static void soc_init_clock(void)
      * frequency now, so the voltage may come down to its bin. No-op when the
      * target bin is already 1275 mV.
      */
+#if !defined(CONFIG_HPM_SOC_VDD_SOC_EXTERNAL)
 #if CONFIG_HPM_SOC_CPU_FREQ_MHZ <= 400
     pcfg_dcdc_set_voltage(HPM_PCFG, 1075);
 #elif CONFIG_HPM_SOC_CPU_FREQ_MHZ <= 480
     pcfg_dcdc_set_voltage(HPM_PCFG, 1175);
+#endif
+#else
+    /*
+     * External rail: the voltage is fixed in hardware and software has no
+     * knob at all. The frequency had to be chosen to fit it (see the
+     * Kconfig help), so there is nothing to step down to here.
+     */
 #endif
 
     /*

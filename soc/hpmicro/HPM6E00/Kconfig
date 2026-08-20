@@ -132,6 +132,42 @@ config HPM_SOC_CPU_FREQ_MHZ
 		microseconds of margin. Re-measure the hot path before shipping
 		anything below 600.
 
+config HPM_SOC_VDD_SOC_EXTERNAL
+	bool "VDD_SOC is supplied externally; the on-chip DCDC is unusable"
+	default n
+	help
+		Set this when the board feeds VDD_SOC from an external
+		regulator instead of the SoC's own DCDC, and therefore
+		populates NO inductor on DCDC_LP.
+
+		What it changes: soc_init_clock() stops calling
+		pcfg_dcdc_set_voltage(). That call is NOT optional politeness
+		on such a board, it is fatal. Both of its branches end in
+
+		    while (!pcfg_dcdc_is_stable(ptr)) { NOP(); }
+
+		(hpm_pcfg_drv.c: switch_to_dcm_mode and
+		set_voltage_ccm_mode) with no timeout and no escape. With no
+		inductor the converter can never reach its regulation point,
+		so the loop never exits. soc_init_clock() runs inside
+		irq_lock() and BEFORE the console is up, so the failure is
+		mute: no banner, no USB, no shell -- indistinguishable from a
+		dead part or a bad flash image. Diagnosed on PS4_V0B
+		(2026-08-20) after the BootROM ISP kept enumerating fine while
+		every image we built hung; ROM never touches PCFG.
+
+		The frequency ceiling becomes a HARDWARE property once this is
+		set. VDD_SOC is whatever the external regulator produces and
+		software cannot move it, so CONFIG_HPM_SOC_CPU_FREQ_MHZ must be
+		chosen to fit that fixed voltage against datasheet table 12,
+		not the other way round. On PS4_V0B the rail is 1.2 V
+		(SSP7615-12MR), which covers the <=480 MHz bin (1.175 V typ)
+		but NOT the <=600 MHz bin (1.275 V typ) -- so 600 MHz on that
+		board is out-of-spec silicon operation, not merely unproven.
+
+		Leave this at n for the EVK and for any board that populates
+		the DCDC inductor.
+
 config HPM_SOC_GATE_UNUSED_CLOCKS
 	bool "Leave unused peripheral clocks gated at boot"
 	default n
