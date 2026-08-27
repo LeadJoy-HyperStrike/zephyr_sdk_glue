@@ -27,6 +27,21 @@
 #include <zephyr/drivers/flash.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/storage/flash_map.h>
+
+/* Drop any D-cache lines covering [offset, offset + size) of the XIP window
+ * after the ROM programmed or erased it, so a later read through the window
+ * (see flash_hpmicro_read) cannot serve the old bytes. */
+static void flash_hpm_dc_drop(off_t offset, size_t size)
+{
+    uint32_t addr = (uint32_t)CONFIG_FLASH_BASE_ADDRESS + (uint32_t)offset;
+    uint32_t start = addr & ~(HPM_L1C_CACHELINE_SIZE - 1u);
+    uint32_t end = (addr + (uint32_t)size + HPM_L1C_CACHELINE_SIZE - 1u) &
+                   ~(HPM_L1C_CACHELINE_SIZE - 1u);
+
+    if (l1c_dc_is_enabled() && end > start) {
+        l1c_dc_invalidate(start, end - start);
+    }
+}
 LOG_MODULE_REGISTER(flash_hpmicro, CONFIG_FLASH_LOG_LEVEL);
 
 #define HPM_STATUS_ZEPHYR_RET(x)    (x)
@@ -57,38 +72,34 @@ static int flash_hpmicro_read(const struct device *dev, off_t offset,
                 size_t size)
 {
     /*
-     * Read through the memory-mapped XIP window, the way HPM's own
-     * eeprom_emulation port does (components/eeprom_emulation/port/
-     * hpm_nor_flash.c: l1c_dc_invalidate + memcpy) -- NOT through the ROM's
-     * IP-mode xpi_nor_read(). hs2prod, 2026-08-27, MCUboot probe C: right
-     * after a swap-using-scratch (~1000 ROM erase/program calls) the ROM read
-     * returned wrong data for sector 1 (31e497e0 instead of 17fa1b55) while
-     * the XIP window read the same sector correctly, and the next ROM read
-     * hung. Earlier runs of the same window had the ROM read return a garbage
-     * status (0xF3000000, the XPI base address) or hang inside the image
-     * validation. The pre-swap validation of the same bytes always passed.
-     * Erase/program stay on the ROM API.
+     * Read through the memory-mapped XIP window with a plain memcpy, the
+     * way HPM's own eeprom_emulation port does -- NOT through the ROM's
+     * IP-mode xpi_nor_read(). hs2prod, 2026-08-27, MCUboot probes right
+     * after a swap-using-scratch (~1000 ROM erase/program calls): the ROM
+     * read returned wrong data (sector 1 hashed 31e497e0 instead of
+     * 17fa1b55) while the XIP window read the same sector correctly, then
+     * hung; earlier runs had it hand back 0xF3000000 (the XPI base, i.e. a0
+     * untouched) or hang inside image validation. Every OTA test swap on
+     * hs2prod reverted because of this.
      *
-     * The invalidate is what keeps this coherent after our own program/erase:
-     * a line cached by an earlier read here would otherwise keep serving the
-     * old bytes.
+     * No invalidate before the copy either: the same probes showed that a
+     * D-cache invalidate of a 256 B chunk immediately followed by its memcpy
+     * returned wrong bytes for 7 of 59 sectors, transiently (a re-read was
+     * right), while a plain memcpy of the same range through the same
+     * staging buffer was right on every sector of every run. Coherence with
+     * this driver's own erase/program is handled in those paths: they drop
+     * the lines they touched once the ROM call has returned.
      */
-    uint32_t addr = (uint32_t)CONFIG_FLASH_BASE_ADDRESS + (uint32_t)offset;
-    uint32_t start = addr & ~(HPM_L1C_CACHELINE_SIZE - 1u);
-    uint32_t end = (addr + (uint32_t)size + HPM_L1C_CACHELINE_SIZE - 1u) &
-                   ~(HPM_L1C_CACHELINE_SIZE - 1u);
+    const uint8_t *src = (const uint8_t *)((uint32_t)CONFIG_FLASH_BASE_ADDRESS +
+                                           (uint32_t)offset);
 
     if (!initted) {
         initted = true;
         flash_hpmicro_init(dev);
     }
-    if (size == 0u) {
-        return 0;
+    if (size != 0u) {
+        memcpy(data, src, size);
     }
-    if (l1c_dc_is_enabled()) {
-        l1c_dc_invalidate(start, end - start);
-    }
-    memcpy(data, (const void *)addr, size);
 
     return 0;
 }
@@ -106,6 +117,7 @@ static int flash_hpmicro_write(const struct device *dev, off_t offset,
     key = irq_lock();
     status = rom_xpi_nor_program(dev_data->controller, xpi_xfer_channel_auto, &s_xpi_nor_config,
                         data, offset, size);
+    flash_hpm_dc_drop(offset, size);
     irq_unlock(key);
     return HPM_STATUS_ZEPHYR_RET(status);
 }
@@ -132,6 +144,7 @@ static int flash_hpmicro_erase(const struct device *dev, off_t offset,
             break;
         }
     }
+    flash_hpm_dc_drop(offset, size);
     irq_unlock(key);
     return HPM_STATUS_ZEPHYR_RET(status);
 }
