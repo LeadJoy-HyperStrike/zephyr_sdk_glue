@@ -18,6 +18,7 @@
 #include <string.h>
 #include <errno.h>
 #include "hpm_romapi.h"
+#include "hpm_l1c_drv.h"
 #ifdef ARRAY_SIZE
 #undef ARRAY_SIZE
 #endif
@@ -55,26 +56,41 @@ static int flash_hpmicro_read(const struct device *dev, off_t offset,
                 void *data,
                 size_t size)
 {
-	struct flash_hpmicro_dev_data *const dev_data = dev->data;
-    hpm_stat_t status = 0;
-	unsigned int key;
+    /*
+     * Read through the memory-mapped XIP window, the way HPM's own
+     * eeprom_emulation port does (components/eeprom_emulation/port/
+     * hpm_nor_flash.c: l1c_dc_invalidate + memcpy) -- NOT through the ROM's
+     * IP-mode xpi_nor_read(). hs2prod, 2026-08-27, MCUboot probe C: right
+     * after a swap-using-scratch (~1000 ROM erase/program calls) the ROM read
+     * returned wrong data for sector 1 (31e497e0 instead of 17fa1b55) while
+     * the XIP window read the same sector correctly, and the next ROM read
+     * hung. Earlier runs of the same window had the ROM read return a garbage
+     * status (0xF3000000, the XPI base address) or hang inside the image
+     * validation. The pre-swap validation of the same bytes always passed.
+     * Erase/program stay on the ROM API.
+     *
+     * The invalidate is what keeps this coherent after our own program/erase:
+     * a line cached by an earlier read here would otherwise keep serving the
+     * old bytes.
+     */
+    uint32_t addr = (uint32_t)CONFIG_FLASH_BASE_ADDRESS + (uint32_t)offset;
+    uint32_t start = addr & ~(HPM_L1C_CACHELINE_SIZE - 1u);
+    uint32_t end = (addr + (uint32_t)size + HPM_L1C_CACHELINE_SIZE - 1u) &
+                   ~(HPM_L1C_CACHELINE_SIZE - 1u);
+
     if (!initted) {
         initted = true;
         flash_hpmicro_init(dev);
     }
-    key = irq_lock();
-    if (size < 4) {
-        uint32_t temp;
-        status = rom_xpi_nor_read(dev_data->controller, xpi_xfer_channel_auto, &s_xpi_nor_config,
-                     &temp, offset, 4);
-        memcpy(data, &temp, size);
-    } else {
-        status = rom_xpi_nor_read(dev_data->controller, xpi_xfer_channel_auto, &s_xpi_nor_config,
-                     data, offset, size);
+    if (size == 0u) {
+        return 0;
     }
-    irq_unlock(key);
+    if (l1c_dc_is_enabled()) {
+        l1c_dc_invalidate(start, end - start);
+    }
+    memcpy(data, (const void *)addr, size);
 
-    return HPM_STATUS_ZEPHYR_RET(status);
+    return 0;
 }
 
 static int flash_hpmicro_write(const struct device *dev, off_t offset,
