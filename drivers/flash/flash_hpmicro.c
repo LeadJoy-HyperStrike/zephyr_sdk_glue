@@ -18,6 +18,7 @@
 #include <string.h>
 #include <errno.h>
 #include "hpm_romapi.h"
+#include "hpm_l1c_drv.h"
 #ifdef ARRAY_SIZE
 #undef ARRAY_SIZE
 #endif
@@ -51,6 +52,82 @@ static const struct flash_parameters flash_hpmicro_parameters = {
 
 static int flash_hpmicro_init(const struct device *dev);
 static bool initted = false;
+
+/*
+ * XIP hazard, and why every entry point below is ATTR_RAMFUNC (.fast -> ILM).
+ *
+ * This driver programs the same NOR the code is executing from. The ROM API
+ * itself lives in BootROM, so the erase/program primitives are safe -- but the
+ * loop AROUND them was not: after each rom_xpi_nor_erase_sector() returned,
+ * the next instruction of this loop had to be fetched from a NOR that had just
+ * been busy, through an XPI whose AHB read path the erase had disturbed. In
+ * the application that mostly worked because the loop body sat in I-cache. In
+ * MCUboot (375 MHz, cold cache, first flash op at boot) it hung: on hs2prod,
+ * 2026-08-27, both a test swap and its revert stopped dead after "Starting
+ * swap using scratch algorithm." with no further output, no assert, no fault
+ * -- and never came back until reset.
+ *
+ * HPM's own wrappers (components/eeprom_emulation/port/hpm_nor_flash.c,
+ * samples/tinyuf2/src/board_api.c) mark every such function ATTR_RAMFUNC and
+ * invalidate D-cache over the touched range afterwards; the flashstress
+ * sample goes further and refuses to run "on flash_xip build" at all. This
+ * file follows the wrappers. The linker script already collects .fast into
+ * the ITCM output section whenever the board provides zephyr,itcm (hs2prod
+ * and the EVK both do) -- the section was simply empty because nothing here
+ * asked to go there.
+ *
+ * The D-cache invalidate matters for a different reason: rom_xpi_nor_read()
+ * bypasses the cache, but XIP code and any memcpy from the flash window do
+ * not, and a line cached before an erase would keep serving the old bytes.
+ */
+#define FLASH_HPM_CACHELINE 64u
+
+ATTR_RAMFUNC
+static void flash_hpm_invalidate(off_t offset, size_t size)
+{
+    uint32_t start = ((uint32_t)CONFIG_FLASH_BASE_ADDRESS + (uint32_t)offset) &
+                     ~(FLASH_HPM_CACHELINE - 1u);
+    uint32_t end = ((uint32_t)CONFIG_FLASH_BASE_ADDRESS + (uint32_t)offset +
+                    (uint32_t)size + FLASH_HPM_CACHELINE - 1u) &
+                   ~(FLASH_HPM_CACHELINE - 1u);
+
+    if (l1c_dc_is_enabled()) {
+        l1c_dc_invalidate(start, end - start);
+    }
+}
+
+/*
+ * rom_xpi_nor_read() is a static inline with a chunking loop; gcc outlines it
+ * into a plain-.text `rom_xpi_nor_read.constprop.0` that does NOT inherit the
+ * caller's .fast placement, which put the read path back on XIP flash. Call
+ * the ROM table directly from here instead, keeping the 32 KiB chunk rule the
+ * SDK wrapper enforces.
+ */
+ATTR_RAMFUNC
+static hpm_stat_t flash_hpm_rom_read(XPI_Type *base, uint32_t *dst,
+                                     uint32_t start, uint32_t length)
+{
+    const uint32_t max_chunk = 32u * 1024u;
+    uint8_t *p = (uint8_t *)dst;
+    hpm_stat_t st = status_success;
+
+    while (length > 0u) {
+        uint32_t chunk = length > max_chunk ? max_chunk : length;
+
+        st = ROM_API_TABLE_ROOT->xpi_nor_driver_if->read(base, xpi_xfer_channel_auto,
+                                                         &s_xpi_nor_config,
+                                                         (uint32_t *)p, start, chunk);
+        if (st != status_success) {
+            break;
+        }
+        p += chunk;
+        start += chunk;
+        length -= chunk;
+    }
+    return st;
+}
+
+ATTR_RAMFUNC
 static int flash_hpmicro_read(const struct device *dev, off_t offset,
                 void *data,
                 size_t size)
@@ -65,18 +142,17 @@ static int flash_hpmicro_read(const struct device *dev, off_t offset,
     key = irq_lock();
     if (size < 4) {
         uint32_t temp;
-        status = rom_xpi_nor_read(dev_data->controller, xpi_xfer_channel_auto, &s_xpi_nor_config,
-                     &temp, offset, 4);
+        status = flash_hpm_rom_read(dev_data->controller, &temp, offset, 4);
         memcpy(data, &temp, size);
     } else {
-        status = rom_xpi_nor_read(dev_data->controller, xpi_xfer_channel_auto, &s_xpi_nor_config,
-                     data, offset, size);
+        status = flash_hpm_rom_read(dev_data->controller, data, offset, size);
     }
     irq_unlock(key);
 
     return HPM_STATUS_ZEPHYR_RET(status);
 }
 
+ATTR_RAMFUNC
 static int flash_hpmicro_write(const struct device *dev, off_t offset,
                  const void *data, size_t size)
 {
@@ -90,32 +166,41 @@ static int flash_hpmicro_write(const struct device *dev, off_t offset,
     key = irq_lock();
     status = rom_xpi_nor_program(dev_data->controller, xpi_xfer_channel_auto, &s_xpi_nor_config,
                         data, offset, size);
+    flash_hpm_invalidate(offset, size);
     irq_unlock(key);
     return HPM_STATUS_ZEPHYR_RET(status);
 }
 
+ATTR_RAMFUNC
 static int flash_hpmicro_erase(const struct device *dev, off_t offset,
                  size_t size)
 {
 	struct flash_hpmicro_dev_data *const dev_data = dev->data;
     hpm_stat_t status = 0;
 	unsigned int key;
+    uint32_t sector;
     if (!initted) {
         initted = true;
         flash_hpmicro_init(dev);
     }
+    /* Used to be `while (1) {}`. A caller error is not a reason to hang the
+     * part silently; report it like every other driver does. */
     if (size < 4) {
-        while (1) {
-        }
+        return -EINVAL;
+    }
+    sector = s_xpi_nor_config.device_info.sector_size_kbytes * 1024u;
+    if (sector == 0u) {
+        return -EIO;
     }
     key = irq_lock();
-    for (int i = 0; i < size; i += (s_xpi_nor_config.device_info.sector_size_kbytes * 1024)) {
+    for (size_t i = 0; i < size; i += sector) {
         status = rom_xpi_nor_erase_sector(dev_data->controller, xpi_xfer_channel_auto, &s_xpi_nor_config,
                                    offset + i);
         if (status != status_success) {
             break;
         }
     }
+    flash_hpm_invalidate(offset, size);
     irq_unlock(key);
     return HPM_STATUS_ZEPHYR_RET(status);
 }
@@ -163,6 +248,7 @@ flash_hpmicro_get_parameters(const struct device *dev)
     return &flash_hpmicro_parameters;
 }
 
+ATTR_RAMFUNC
 static int flash_hpmicro_init(const struct device *dev)
 {
 	struct flash_hpmicro_dev_data *const dev_data = dev->data;
