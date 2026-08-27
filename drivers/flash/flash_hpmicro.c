@@ -72,23 +72,23 @@ static int flash_hpmicro_read(const struct device *dev, off_t offset,
                 size_t size)
 {
     /*
-     * Read through the memory-mapped XIP window with a plain memcpy, the
-     * way HPM's own eeprom_emulation port does -- NOT through the ROM's
-     * IP-mode xpi_nor_read(). hs2prod, 2026-08-27, MCUboot probes right
-     * after a swap-using-scratch (~1000 ROM erase/program calls): the ROM
-     * read returned wrong data (sector 1 hashed 31e497e0 instead of
-     * 17fa1b55) while the XIP window read the same sector correctly, then
-     * hung; earlier runs had it hand back 0xF3000000 (the XPI base, i.e. a0
-     * untouched) or hang inside image validation. Every OTA test swap on
-     * hs2prod reverted because of this.
+     * Read through the memory-mapped XIP window with a plain memcpy, the way
+     * HPM's own eeprom_emulation port does (components/eeprom_emulation/port/
+     * hpm_nor_flash.c) -- not through the ROM's IP-mode xpi_nor_read().
      *
-     * No invalidate before the copy either: the same probes showed that a
-     * D-cache invalidate of a 256 B chunk immediately followed by its memcpy
-     * returned wrong bytes for 7 of 59 sectors, transiently (a re-read was
-     * right), while a plain memcpy of the same range through the same
-     * staging buffer was right on every sector of every run. Coherence with
-     * this driver's own erase/program is handled in those paths: they drop
-     * the lines they touched once the ROM call has returned.
+     * Context (hs2prod bench, 2026-08-27): during the OTA investigation the
+     * ROM read returned wrong data / a garbage status / hung right after a
+     * swap, and "invalidate then memcpy" read transiently wrong bytes, while
+     * a plain memcpy was right in every probe run. The root cause of that day
+     * turned out to be the bench USB supply collapsing under the swap's
+     * sustained erase load (VPMC POR; see backlog #31) -- those read paths
+     * were the first victims of a sagging rail, not broken in themselves.
+     * This implementation is kept because it matches HPM's own practice, has
+     * no ROM/XPI state dependence, degraded most gracefully on a marginal
+     * rail, and is the configuration the final passing OTA rounds validated.
+     *
+     * Coherence with this driver's own erase/program comes from those paths:
+     * they drop the D-cache lines they touched once the ROM call returns.
      */
     const uint8_t *src = (const uint8_t *)((uint32_t)CONFIG_FLASH_BASE_ADDRESS +
                                            (uint32_t)offset);
