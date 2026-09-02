@@ -26,6 +26,34 @@
 __attribute__((section(".nor_cfg_option"), used)) const uint32_t option[4] = { 0xfcf90001, 0x00000007, 0x0, 0x0 };
 __attribute__((section(".last_section"))) const uint32_t rom_marker = CONFIG_LINKER_LAST_SECTION_ID_PATTERN;
 #endif
+
+#if !defined(CONFIG_XIP) && \
+	(DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_itcm), okay) || DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_dtcm), okay))
+#include <zephyr/linker/linker-defs.h>
+#include <kernel_internal.h>
+/*
+ * Non-XIP (load-to-RAM) images: the kernel only copies the ITCM/DTCM load
+ * sections inside z_data_copy() (kernel/xip.c), which is compiled for XIP
+ * builds alone. Our linker still places .isr and .itcm.* at ITCM VMA 0 with
+ * their LMA in RAM (see common/linker.ld GROUP_LINK_IN(ITCM AT> ROMABLE_REGION)),
+ * so without this copy the first interrupt jumps into an uninitialised ITCM.
+ * DTCM .bss is already zeroed by z_bss_zero() regardless of XIP; only the
+ * initialised data section needs copying here. EARLY runs at the top of
+ * z_cstart(), before any driver init can reach ITCM code.
+ */
+static int hpm_tcm_load_sections(void)
+{
+#if DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_itcm), okay)
+	z_early_memcpy(&__itcm_start, &__itcm_load_start, (uintptr_t)&__itcm_size);
+#endif
+#if DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_dtcm), okay)
+	z_early_memcpy(&__dtcm_data_start, &__dtcm_data_load_start,
+		       __dtcm_data_end - __dtcm_data_start);
+#endif
+	return 0;
+}
+SYS_INIT(hpm_tcm_load_sections, EARLY, 0);
+#endif /* !CONFIG_XIP && TCM */
 __attribute__((weak)) void c_startup(void)
 {
 }
