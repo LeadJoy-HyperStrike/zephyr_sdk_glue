@@ -86,7 +86,7 @@ static void soc_init_clock(void)
      */
     clock_add_to_group(clock_emds, 0);
     /*
-     * The motor-control island (QEI/QEO/RDC/MTG/VSC/CLC/PLB/SEI), PWM1-3 and
+     * The motor-control island (QEI/QEO/RDC/MTG/VSC/CLC/PLB/SEI), PWM2-3 and
      * PTPC have no enabled devicetree node on the boards this fork carries,
      * and each has its own sysctl resource, so removing them leaves TRGM and
      * PWM0 clocked through EMDS above.

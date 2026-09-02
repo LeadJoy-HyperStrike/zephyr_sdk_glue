@@ -332,6 +332,17 @@ static int pwm_hpmicro_v1_init(const struct device *dev)
 		return err;
 	}
 
+	/*
+	 * Own the clock. soc_init_clock() leaves every controller in
+	 * hpm_gated_clocks.h gated when CONFIG_HPM_SOC_GATE_UNUSED_CLOCKS=y, and
+	 * nothing else turns one back on for us: the uart/spi/i2c/adc glue
+	 * drivers all clock_add_to_group() their own instance in init, this one
+	 * did not. First victim: hs2prod's left motor sits on PWM1 (PWM1_P_5),
+	 * the first DT-enabled PWM outside the always-on PWM0. A gated block's
+	 * registers are not writable, so this precedes every register access.
+	 */
+	clock_add_to_group((clock_name_t)config->clock_name, 0);
+
 	pwm_get_default_pwm_config(pwm_base, &pwm_config);
 	pwm_config.enable_output = true;
     pwm_config.dead_zone_in_half_cycle = config->dead_zone_in_half_cycle;
@@ -356,6 +367,17 @@ static int pwm_hpmicro_v2_init(const struct device *dev)
 	if (err < 0) {
 		return err;
 	}
+
+	/*
+	 * Own the clock. soc_init_clock() leaves every controller in
+	 * hpm_gated_clocks.h gated when CONFIG_HPM_SOC_GATE_UNUSED_CLOCKS=y, and
+	 * nothing else turns one back on for us: the uart/spi/i2c/adc glue
+	 * drivers all clock_add_to_group() their own instance in init, this one
+	 * did not. First victim: hs2prod's left motor sits on PWM1 (PWM1_P_5),
+	 * the first DT-enabled PWM outside the always-on PWM0. A gated block's
+	 * registers are not writable, so this precedes every register access.
+	 */
+	clock_add_to_group((clock_name_t)config->clock_name, 0);
 
 	/* Deinitialize PWMv2 to reset to known state */
 	pwmv2_deinit(pwm_base);

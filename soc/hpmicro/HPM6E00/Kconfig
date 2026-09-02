@@ -173,7 +173,7 @@ config HPM_SOC_GATE_UNUSED_CLOCKS
 	default n
 	help
 		Gates the motor-control island (QEI/QEO/RDC/MTG/VSC/CLC/PLB/
-		SEI), PWM1-3 and PTPC, none of which has an enabled devicetree
+		SEI), PWM2-3 and PTPC, none of which has an enabled devicetree
 		node on the boards this fork carries. EMDS is NOT in that list
 		any more -- see below.
 

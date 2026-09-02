@@ -34,10 +34,18 @@
  * ---------------------------------------------------------------------------
  * IN USE -- these must never appear here:
  *   adc0-3, i2c0 (touchpad), spi1 (WS2812), spi7 (BMI423 IMU), uart0
- *   (console/shell), usb0, pwm0 (ADC TRGO), emds (motor-island master gate
- *   that clocks TRGM), gptmr0 (hs2_stream), gptmr1 (AD7606 CONVST -- added by
- *   that driver through a variable, so grepping for clock_add_to_group misses
- *   it; it was nearly misfiled as unowned).
+ *   (console/shell), usb0, pwm0 (ADC TRGO), pwm1 (hs2prod left motor, DRV8833
+ *   IN1 on PWM1_P_5 -- added 2026-08-26 by module 10, AFTER this list was
+ *   written; it sat here gated until the 2026-09-02 review), emds
+ *   (motor-island master gate that clocks TRGM), gptmr0 (hs2_stream), gptmr1
+ *   (AD7606 CONVST -- added by that driver through a variable, so grepping
+ *   for clock_add_to_group misses it; it was nearly misfiled as unowned).
+ *
+ * The list is now also checked mechanically: hs2_hpm_firmware
+ * tests/static/test_gated_clock_contract.py fails when any entry below has a
+ * status="okay" node in a board dts / app overlay, and the pwm glue driver
+ * clock_add_to_group()s its own instance in init as a second line of defence
+ * (the uart/spi/i2c/adc drivers always did; pwm did not).
  *
  * DELIBERATELY WITHHELD -- each for its own reason, check it before adding:
  *   femc        the AD7606 PPI runs on the pad group shared with FEMC. The
@@ -62,12 +70,13 @@
 #ifndef HPM_GATED_CLOCKS_H_
 #define HPM_GATED_CLOCKS_H_
 
-/* Motor-control island, minus EMDS (its master gate -- see soc.c). */
+/* Motor-control island, minus EMDS (its master gate -- see soc.c) and minus
+ * PWM1 (hs2prod left motor -- see IN USE above). */
 #define HPM_GATED_CLOCK_LIST_MOTOR(X) \
 	X(ptpc) \
 	X(qei0) X(qei1) X(qei2) X(qei3) \
 	X(qeo0) X(qeo1) X(qeo2) X(qeo3) \
-	X(pwm1) X(pwm2) X(pwm3) \
+	X(pwm2) X(pwm3) \
 	X(rdc0) X(rdc1) \
 	X(plb0) X(sei0) \
 	X(mtg0) X(mtg1) \
