@@ -89,7 +89,18 @@ static int flash_hpmicro_read(const struct device *dev, off_t offset,
      *
      * Coherence with this driver's own erase/program comes from those paths:
      * they drop the D-cache lines they touched once the ROM call returns.
+     *
+     * One exception (2026-09-02, ROM-native dual image): when the BootROM
+     * booted the second image it enabled XPI address remapping, and the
+     * window at the flash base then shows the *other* slot's bytes -- and
+     * through EXIP, decrypted ones. A window memcpy is only right for the
+     * running image, so with remap on we go through the ROM's IP-command
+     * read, which addresses physical flash offsets and bypasses EXIP: raw
+     * bytes, which is what a readback check against a catalog sha256 wants.
+     * The IP read's destination is a uint32_t *; callers on that path
+     * (hs2img_mgmt, slot_state) declare their buffers 4-byte aligned.
      */
+    struct flash_hpmicro_dev_data *const dev_data = dev->data;
     const uint8_t *src = (const uint8_t *)((uint32_t)CONFIG_FLASH_BASE_ADDRESS +
                                            (uint32_t)offset);
 
@@ -97,9 +108,18 @@ static int flash_hpmicro_read(const struct device *dev, off_t offset,
         initted = true;
         flash_hpmicro_init(dev);
     }
-    if (size != 0u) {
-        memcpy(data, src, size);
+    if (size == 0u) {
+        return 0;
     }
+    if (rom_xpi_nor_is_remap_enabled(dev_data->controller)) {
+        unsigned int key = irq_lock();
+        hpm_stat_t status = rom_xpi_nor_read(dev_data->controller, xpi_xfer_channel_auto,
+                                             &s_xpi_nor_config, (uint32_t *)data,
+                                             (uint32_t)offset, (uint32_t)size);
+        irq_unlock(key);
+        return status == status_success ? 0 : -EIO;
+    }
+    memcpy(data, src, size);
 
     return 0;
 }
