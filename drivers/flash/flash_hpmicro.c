@@ -67,6 +67,52 @@ static const struct flash_parameters flash_hpmicro_parameters = {
 
 static int flash_hpmicro_init(const struct device *dev);
 static bool initted = false;
+/*
+ * IP-command read (physical offsets, bypasses EXIP). The ROM's read wants a
+ * word-aligned destination and works in whole words; callers of flash_read()
+ * do not promise either (NVS reads ATEs and payloads at arbitrary offsets and
+ * lengths), so anything not word-aligned on both ends goes through a small
+ * aligned bounce buffer. Aligned callers (slot_state, hs2img) take the direct
+ * path. Each ROM call runs under irq_lock like program/erase do.
+ */
+static int flash_hpmicro_ip_read(const struct device *dev, off_t offset, void *data, size_t size)
+{
+    struct flash_hpmicro_dev_data *const dev_data = dev->data;
+    uint8_t *out = data;
+    uint32_t bounce[64];
+    hpm_stat_t status;
+    unsigned int key;
+
+    if ((((uintptr_t)data) & 3u) == 0u && ((uint32_t)offset & 3u) == 0u && (size & 3u) == 0u) {
+        key = irq_lock();
+        status = rom_xpi_nor_read(dev_data->controller, xpi_xfer_channel_auto, &s_xpi_nor_config,
+                                  (uint32_t *)data, (uint32_t)offset, (uint32_t)size);
+        irq_unlock(key);
+        return status == status_success ? 0 : -EIO;
+    }
+    while (size > 0u) {
+        uint32_t start = (uint32_t)offset & ~3u;
+        uint32_t skip = (uint32_t)offset - start;
+        uint32_t take = (uint32_t)size;
+
+        if (take > sizeof(bounce) - skip) {
+            take = sizeof(bounce) - skip;
+        }
+        key = irq_lock();
+        status = rom_xpi_nor_read(dev_data->controller, xpi_xfer_channel_auto, &s_xpi_nor_config,
+                                  bounce, start, (skip + take + 3u) & ~3u);
+        irq_unlock(key);
+        if (status != status_success) {
+            return -EIO;
+        }
+        memcpy(out, (const uint8_t *)bounce + skip, take);
+        out += take;
+        offset += take;
+        size -= take;
+    }
+    return 0;
+}
+
 static int flash_hpmicro_read(const struct device *dev, off_t offset,
                 void *data,
                 size_t size)
@@ -112,12 +158,7 @@ static int flash_hpmicro_read(const struct device *dev, off_t offset,
         return 0;
     }
     if (rom_xpi_nor_is_remap_enabled(dev_data->controller)) {
-        unsigned int key = irq_lock();
-        hpm_stat_t status = rom_xpi_nor_read(dev_data->controller, xpi_xfer_channel_auto,
-                                             &s_xpi_nor_config, (uint32_t *)data,
-                                             (uint32_t)offset, (uint32_t)size);
-        irq_unlock(key);
-        return status == status_success ? 0 : -EIO;
+        return flash_hpmicro_ip_read(dev, offset, data, size);
     }
     memcpy(data, src, size);
 
