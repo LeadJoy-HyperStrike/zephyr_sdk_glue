@@ -150,31 +150,15 @@ static int flash_hpmicro_erase(const struct device *dev, off_t offset,
 }
 
 #if CONFIG_FLASH_PAGE_LAYOUT
+/* One uniform layout for the whole part: every sector of the NOR erases as one
+ * page of erase-block-size. It used to be a chain of per-partition entries with
+ * the same page size, which tied the driver to the MCUboot partition labels
+ * (boot/scratch) and broke the build the moment a board dropped them. */
 static const struct flash_pages_layout flash_hpm_pages_layout[] = {
     {
-        .pages_count = FIXED_PARTITION_OFFSET(boot_partition) / KB(4),
-        .pages_size = KB(4),
+        .pages_count = DT_REG_SIZE(SOC_NV_FLASH_NODE) / FLASH_ERASE_BLK_SZ,
+        .pages_size = FLASH_ERASE_BLK_SZ,
     },
-    {
-        .pages_count = FIXED_PARTITION_SIZE(boot_partition) / KB(4),
-        .pages_size = KB(4)
-    },
-    {
-        .pages_count = FIXED_PARTITION_SIZE(slot0_partition) / KB(4),
-        .pages_size = KB(4)
-    },
-    {
-        .pages_count = FIXED_PARTITION_SIZE(slot1_partition) / KB(4),
-        .pages_size = KB(4)
-    },
-    {
-        .pages_count = FIXED_PARTITION_SIZE(scratch_partition) / KB(4),
-        .pages_size = KB(4)
-    },
-    {
-        .pages_count = FIXED_PARTITION_SIZE(storage_partition) / KB(4),
-        .pages_size = KB(4)
-    }
 };
 
 void flash_hpmicro_page_layout(const struct device *dev,

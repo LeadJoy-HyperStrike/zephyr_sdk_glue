@@ -28,7 +28,6 @@
 		zephyr,flash = &flash0;
 		zephyr,itcm = &ilm;
 		zephyr,dtcm = &dlm;
-		zephyr,code-partition = &slot0_partition;
 		zephyr,flash-controller = &xpi0;
 	};
 
@@ -179,30 +178,27 @@
 			compatible = "fixed-partitions";
 			#address-cells = <1>;
 			#size-cells = <1>;
-
-			boot_partition: partition@0 {
-				label = "mcuboot";
-				reg = <0x3000 0x40000>;
-			};
-
-			slot0_partition: partition@43000 {
+			/*
+			 * ROM-native dual image (spec 2026-09-02 v2 §3.1). Each slot is a
+			 * complete boot image: EXIP key blob @+0, XPI option @+0x400, ROM
+			 * container header @+0x1000, firmware @+0x3000. The last 4 KB
+			 * sector of each slot holds the app's slot-state record; the ROM
+			 * never hashes it and no EXIP region covers it. OTP word 25 = 8
+			 * puts image 1 at 0x200000; storage sits above both.
+			 */
+			slot0_partition: partition@0 {
 				label = "image-0";
-				reg = <0x43000 DT_SIZE_K(1536)>;
+				reg = <0x0 0x1c0000>;
 			};
 
-			slot1_partition: partition@1c3000 {
+			slot1_partition: partition@200000 {
 				label = "image-1";
-				reg = <0x1c3000 DT_SIZE_K(1536)>;
+				reg = <0x200000 0x1c0000>;
 			};
 
-			scratch_partition: partition@343000 {
-				label = "image-scratch";
-				reg = <0x343000 DT_SIZE_K(128)>;
-			};
-
-			storage_partition: partition@363000 {
+			storage_partition: partition@3c0000 {
 				label = "storage";
-				reg = <0x363000 DT_SIZE_K(128)>;
+				reg = <0x3c0000 0x40000>;
 			};
 		};
 	};
