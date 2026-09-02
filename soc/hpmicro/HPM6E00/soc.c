@@ -23,7 +23,20 @@
 #endif
 
 #ifdef CONFIG_XIP
-__attribute__((section(".nor_cfg_option"), used)) const uint32_t option[4] = { 0xfcf90001, 0x00000007, 0x0, 0x0 };
+/*
+ * XPI NOR config option block, read by the BootROM at flash offset 0x400 to
+ * bring the flash up before it loads anything. option0's low nibble is the
+ * frequency option (SDK hpm_romapi_xpi_nor_def.h: freq_opt:4).
+ *
+ * 5 = 100 MHz, not 7 = 133 MHz. 133 is out of spec for both parts this SoC
+ * ships against -- GD25Q32EWIG allows 104 MHz at DC=0 (datasheet table 8),
+ * MX25L12833F only 84 -- and HPMicro's own EVK ships freq_opt 5. Running the
+ * ROM's load of MCUboot out of spec is marginal rather than reliably broken,
+ * so it shows up as one board booting and the next dropping into the BootROM
+ * (observed 2026-09-02 on an hs2prod with the GD part). Keep this in step
+ * with hs2prod.dts's nor-cfg-opt-opt0.
+ */
+__attribute__((section(".nor_cfg_option"), used)) const uint32_t option[4] = { 0xfcf90001, 0x00000005, 0x0, 0x0 };
 __attribute__((section(".last_section"))) const uint32_t rom_marker = CONFIG_LINKER_LAST_SECTION_ID_PATTERN;
 #endif
 
