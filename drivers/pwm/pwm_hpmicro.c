@@ -337,7 +337,7 @@ static int pwm_hpmicro_v1_init(const struct device *dev)
 	 * hpm_gated_clocks.h gated when CONFIG_HPM_SOC_GATE_UNUSED_CLOCKS=y, and
 	 * nothing else turns one back on for us: the uart/spi/i2c/adc glue
 	 * drivers all clock_add_to_group() their own instance in init, this one
-	 * did not. First victim: hs2prod's left motor sits on PWM1 (PWM1_P_5),
+	 * did not. First victim: one of hs2prod's rumble motors sits on PWM1 (PWM1_P_5),
 	 * the first DT-enabled PWM outside the always-on PWM0. A gated block's
 	 * registers are not writable, so this precedes every register access.
 	 */
@@ -373,7 +373,7 @@ static int pwm_hpmicro_v2_init(const struct device *dev)
 	 * hpm_gated_clocks.h gated when CONFIG_HPM_SOC_GATE_UNUSED_CLOCKS=y, and
 	 * nothing else turns one back on for us: the uart/spi/i2c/adc glue
 	 * drivers all clock_add_to_group() their own instance in init, this one
-	 * did not. First victim: hs2prod's left motor sits on PWM1 (PWM1_P_5),
+	 * did not. First victim: one of hs2prod's rumble motors sits on PWM1 (PWM1_P_5),
 	 * the first DT-enabled PWM outside the always-on PWM0. A gated block's
 	 * registers are not writable, so this precedes every register access.
 	 */
