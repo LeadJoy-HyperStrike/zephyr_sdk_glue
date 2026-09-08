@@ -318,9 +318,14 @@ static int hpmicro_i2c_transfer(const struct device *dev,
 													| I2C_CTRL_DATACNT_SET(I2C_DATACNT_MAP(data->transfer.curr_len));
 			}
 			cfg->base->CTRL = ctrl;
+			/* Arm BEFORE launch. INTEN uses a non-atomic read/OR/write.
+			 * A post-START thread store can overwrite FIFOFULL enabled by
+			 * the ADDRHIT ISR. CYTT210 bench 2026-09-08: INTEN=0x208,
+			 * FIFO full, index=0/20, DATACNT=16, SCL held low -> timeout.
+			 * Do not move this below CMD or add a second post-launch RMW. */
+			i2c_enable_irq(cfg->base, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE);
 			cfg->base->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
 	}
-	i2c_enable_irq(cfg->base, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE);
 	if (data->slave) {
 		/*
 		 * Target mode: waiting to be addressed by a bus controller is
@@ -460,12 +465,14 @@ static int hpmicro_restart_i2c(const struct device *dev, uint32_t size)
 											| I2C_CTRL_DATACNT_SET(I2C_DATACNT_MAP(data->transfer.curr_len));
 	}
 	i2c->CTRL = ctrl;
-	i2c->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
 	if (transfer->msgs->flags & I2C_MSG_RESTART) {
 		i2c_enable_irq(i2c, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE);
 	} else {
 		i2c_enable_irq(i2c, I2C_EVENT_FIFO_EMPTY | I2C_EVENT_TRANSACTION_COMPLETE);
 	}
+	/* Keep launch last here as well: the next packet must not start
+	 * before the interrupt sources that will service it are armed. */
+	i2c->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
 	return 0;
 }
 
