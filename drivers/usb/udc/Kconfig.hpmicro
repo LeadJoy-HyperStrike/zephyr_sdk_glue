@@ -25,6 +25,14 @@ config UDC_HPMICRO
 	  data with no cache maintenance, which corrupts transfers on
 	  D-cache-enabled parts.
 
+config UDC_HPM_DMA_ABORT_SAFE
+	bool
+	default y
+	depends on UDC_HPMICRO
+	help
+	  Driver capability: dequeue quiesces endpoint DMA before cancellation,
+	  and bounce allocation owners survive descriptor reset until reclaimed.
+
 config UDC_HPM_LATENCY_HOOK
 	bool "HS2 latency instrumentation hook in the UDC ISR"
 	default n

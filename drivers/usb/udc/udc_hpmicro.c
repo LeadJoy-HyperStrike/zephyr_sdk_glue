@@ -71,6 +71,13 @@ struct udc_hpm_config {
 
 struct udc_hpm_data {
 	usb_device_handle_t handle;
+	/* The SDK wipes qHDs on reset, and attached_buffer remains stale after
+	 * completion. Keep allocation ownership separate from DMA descriptors.
+	 * Epochs also fence a feeder interrupted during allocation/copy. */
+	uint32_t dma_epoch[USB_SOS_DCD_MAX_QHD_COUNT];
+#if HPM_UDC_USE_NOCACHE
+	uint8_t *dma_bounce[USB_SOS_DCD_MAX_QHD_COUNT];
+#endif
 };
 
 /* TODO: implement the cache maintenance
@@ -83,9 +90,9 @@ struct udc_hpm_data {
 K_HEAP_DEFINE_NOCACHE(hpm_packet_alloc_pool, 16u * 2u * 1024u);
 
 /* allocate non-cached buffer for usb */
-static void *udc_hpm_nocache_alloc(uint32_t size)
+static uint8_t *udc_hpm_nocache_alloc(uint32_t size)
 {
-	void *p = (void *)k_heap_alloc(&hpm_packet_alloc_pool, size, K_NO_WAIT);
+	uint8_t *p = (uint8_t *)k_heap_alloc(&hpm_packet_alloc_pool, size, K_NO_WAIT);
 
 	if (p != NULL) {
 		(void)memset(p, 0, size);
@@ -108,6 +115,95 @@ static void udc_hpm_nocache_free(void *p)
 static inline uint8_t ep_idx2bit(uint8_t ep_idx)
 {
 	return ep_idx / 2 + ((ep_idx % 2) ? 16 : 0);
+}
+
+static inline uint8_t ep_addr2idx(uint8_t ep)
+{
+	return 2u * (ep & 0x0fu) + ((ep & 0x80u) ? 1u : 0u);
+}
+
+#if HPM_UDC_USE_NOCACHE
+static uint8_t *udc_hpm_dma_take(const struct device *dev, uint8_t ep)
+{
+	struct udc_hpm_data *priv = udc_get_private(dev);
+	uint8_t idx = ep_addr2idx(ep);
+	unsigned int key = irq_lock();
+	uint8_t *data = priv->dma_bounce[idx];
+
+	priv->dma_bounce[idx] = NULL;
+	irq_unlock(key);
+	return data;
+}
+#endif
+
+/* Call only after DMA has stopped, with IRQs locked. */
+static void udc_hpm_dma_release(const struct device *dev, uint8_t ep)
+{
+#if HPM_UDC_USE_NOCACHE
+	udc_hpm_nocache_free(udc_hpm_dma_take(dev, ep));
+#else
+	ARG_UNUSED(dev);
+	ARG_UNUSED(ep);
+#endif
+}
+
+/* SDK drivers/src/hpm_usb_drv.c usb_dcd_edpt_close() requires FLUSH to
+ * self-clear AND STAT to clear. Check PRIME too: a prime request may latch
+ * while the flush is completing. Unlike close, dequeue preserves enable
+ * and data toggle. Bound the wait and retain every owner on failure. */
+static int udc_hpm_dma_abort(const struct device *dev, uint8_t ep)
+{
+	struct udc_hpm_data *priv = udc_get_private(dev);
+	USB_Type *regs = priv->handle.regs;
+	uint32_t bit = 1u << ep_idx2bit(ep_addr2idx(ep));
+	bool stopped = false;
+
+	for (unsigned int attempt = 0; attempt < 8u; attempt++) {
+		if (((regs->ENDPTFLUSH | regs->ENDPTSTAT |
+		      regs->ENDPTPRIME) & bit) == 0u) {
+			stopped = true;
+			break;
+		}
+		regs->ENDPTFLUSH = bit;
+		for (unsigned int spin = 0; spin < 1000u; spin++) {
+			if ((regs->ENDPTFLUSH & bit) == 0u) {
+				break;
+			}
+		}
+		if (((regs->ENDPTFLUSH | regs->ENDPTSTAT |
+		      regs->ENDPTPRIME) & bit) == 0u) {
+			stopped = true;
+			break;
+		}
+	}
+	if (!stopped) {
+		return -EIO;
+	}
+	/* ENDPTCOMPLETE is W1C; do not clear unrelated endpoints. */
+	regs->ENDPTCOMPLETE = bit;
+	return 0;
+}
+
+static void udc_hpm_bus_reset(const struct device *dev)
+{
+	struct udc_hpm_data *priv = udc_get_private(dev);
+	unsigned int key = irq_lock();
+
+	for (uint8_t idx = 0; idx < USB_SOS_DCD_MAX_QHD_COUNT; idx++) {
+		priv->dma_epoch[idx]++;
+	}
+	/* SDK usb_device_bus_reset() flushes all DMA before memset(dcd_data).
+	 * The private owner map survives that memset, including EP0 storage. */
+	usb_device_bus_reset(&priv->handle, USB_HPM_EP0_SIZE);
+	for (uint8_t idx = 0; idx < USB_SOS_DCD_MAX_QHD_COUNT; idx++) {
+		uint8_t ep = (idx / 2u) | ((idx & 1u) ? 0x80u : 0u);
+
+		udc_hpm_dma_release(dev, ep);
+		if (udc_get_ep_cfg(dev, ep) != NULL) {
+			udc_ep_set_busy(dev, ep, false);
+		}
+	}
+	irq_unlock(key);
 }
 
 #if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
@@ -368,18 +464,28 @@ bool udc_hpm_fastpath_ep_primed(const struct device *dev, uint8_t ep_addr)
 /* If ep is busy, return busy. Otherwise feed the buf to controller */
 static int udc_hpm_ep_feed(const struct device *dev,
 			struct udc_ep_config *const cfg,
-			struct net_buf *const buf)
+			struct net_buf *const buf, uint32_t *feed_epoch)
 {
 	struct udc_hpm_data *priv = udc_get_private(dev);
 	usb_device_handle_t *handle = &priv->handle;
 	bool status = true;
 	uint8_t *data;
 	uint32_t len;
+	uint8_t idx = ep_addr2idx(cfg->addr);
+	uint32_t epoch;
 	unsigned int key;
 
 	key = irq_lock();
+	if (!cfg->stat.enabled) {
+		irq_unlock(key);
+		return -EACCES;
+	}
 	if (!udc_ep_is_busy(dev, cfg->addr)) {
 		udc_ep_set_busy(dev, cfg->addr, true);
+		epoch = priv->dma_epoch[idx];
+		if (feed_epoch != NULL) {
+			*feed_epoch = epoch;
+		}
 		irq_unlock(key);
 
 		if (USB_EP_DIR_IS_OUT(cfg->addr)) {
@@ -392,7 +498,6 @@ static int udc_hpm_ep_feed(const struct device *dev,
 #else
 			data = net_buf_tail(buf);
 #endif
-			status = usb_device_edpt_xfer(handle, cfg->addr, data, len);
 		} else {
 			len = buf->len;
 #if HPM_UDC_USE_NOCACHE
@@ -400,13 +505,37 @@ static int udc_hpm_ep_feed(const struct device *dev,
 			if (len != 0 && data == NULL) {
 				goto no_mem;
 			}
-			memcpy(data, buf->data, len);
+			if (len != 0u) {
+				memcpy(data, buf->data, len);
+			}
 #else
 			data = buf->data;
 #endif
-			status = usb_device_edpt_xfer(handle, cfg->addr, data, len);
+		}
+
+		/* Allocation/copy may be interrupted by dequeue, close or reset.
+		 * Publish ownership and prime atomically with those lifecycle paths.
+		 * SDK usb_dcd_edpt_xfer() is a single PRIME write; no RTOS waits. */
+		key = irq_lock();
+		if (priv->dma_epoch[idx] != epoch || !cfg->stat.enabled ||
+		    !udc_ep_is_busy(dev, cfg->addr)) {
+			irq_unlock(key);
+#if HPM_UDC_USE_NOCACHE
+			udc_hpm_nocache_free(data);
+#endif
+			return -EACCES;
+		}
+#if HPM_UDC_USE_NOCACHE
+		priv->dma_bounce[idx] = data;
+#endif
+		status = usb_device_edpt_xfer(handle, cfg->addr, data, len);
+		if (!status) {
+			udc_hpm_dma_release(dev, cfg->addr);
+			udc_ep_set_busy(dev, cfg->addr, false);
+		}
+		irq_unlock(key);
 #if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
-			if (status) {
+			if (status && USB_EP_DIR_IS_IN(cfg->addr)) {
 				USB_Type *regs = handle->regs;
 				uint32_t bit = HPM_BITSMASK(1, cfg->addr & 0x0F)
 					       << 16;
@@ -430,13 +559,6 @@ static int udc_hpm_ep_feed(const struct device *dev,
 							spins >= 2000);
 			}
 #endif
-		}
-
-		key = irq_lock();
-		if (!status) {
-			udc_ep_set_busy(dev, cfg->addr, false);
-		}
-		irq_unlock(key);
 	} else {
 		irq_unlock(key);
 		return -EBUSY;
@@ -444,7 +566,7 @@ static int udc_hpm_ep_feed(const struct device *dev,
 
 	return (status ? 0 : -EIO);
 
-#if defined(CONFIG_NOCACHE_MEMORY)
+#if HPM_UDC_USE_NOCACHE
 no_mem:
 	/*
 	 * Nocache pool exhausted: do NOT hand a NULL buffer to the controller
@@ -452,6 +574,10 @@ no_mem:
 	 * Release the busy flag so the endpoint can be fed again later.
 	 */
 	key = irq_lock();
+	if (priv->dma_epoch[idx] != epoch) {
+		irq_unlock(key);
+		return -EACCES;
+	}
 	udc_ep_set_busy(dev, cfg->addr, false);
 	irq_unlock(key);
 	return -ENOMEM;
@@ -463,12 +589,31 @@ static int udc_hpm_ep_try_feed(const struct device *dev,
 			struct udc_ep_config *const cfg)
 {
 	struct net_buf *feed_buf;
+	struct udc_hpm_data *priv = udc_get_private(dev);
+	uint32_t epoch = 0;
 
 	feed_buf = udc_buf_peek(dev, cfg->addr);
 	if (feed_buf) {
-		int ret = udc_hpm_ep_feed(dev, cfg, feed_buf);
+		int ret = udc_hpm_ep_feed(dev, cfg, feed_buf, &epoch);
 
-		return ((ret == -EBUSY || ret == -EACCES || ret == 0) ? 0 : -EIO);
+		if (ret != -EBUSY && ret != -EACCES && ret != 0) {
+			/* Once queued, the driver owns every buffer. Report a failed
+			 * feed asynchronously, like a failed transfer, instead of
+			 * returning an enqueue error with a freed buffer in the FIFO.
+			 * These errors occur before PRIME, with no active DMA. */
+			unsigned int key = irq_lock();
+			struct net_buf *failed = NULL;
+
+			if (priv->dma_epoch[ep_addr2idx(cfg->addr)] == epoch &&
+			    !udc_ep_is_busy(dev, cfg->addr)) {
+				failed = udc_buf_get_all(dev, cfg->addr);
+			}
+
+			irq_unlock(key);
+			if (failed != NULL) {
+				udc_submit_ep_event(dev, failed, ret);
+			}
+		}
 	}
 
 	return 0;
@@ -482,7 +627,6 @@ static int udc_hpm_ctrl_feed_dout(const struct device *dev,
 {
 	struct net_buf *buf;
 	struct udc_ep_config *cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
-	int ret;
 
 	buf = udc_ctrl_alloc(dev, USB_CONTROL_EP_OUT, length);
 	if (buf == NULL) {
@@ -491,14 +635,7 @@ static int udc_hpm_ctrl_feed_dout(const struct device *dev,
 
 	net_buf_put(&cfg->fifo, buf);
 
-	ret = udc_hpm_ep_feed(dev, cfg, buf);
-
-	if (ret) {
-		net_buf_unref(buf);
-		return ret;
-	}
-
-	return 0;
+	return udc_hpm_ep_try_feed(dev, cfg);
 }
 
 static void udc_hpm_handler_setup(const struct device *dev, struct usb_setup_packet *setup)
@@ -662,11 +799,18 @@ static int udc_hpm_handler_out(const struct device *dev, uint8_t ep,
 
 	buf = udc_buf_get(dev, ep);
 
+#if HPM_UDC_USE_NOCACHE
+	hpm_buf = udc_hpm_dma_take(dev, ep);
+#endif
+
 	key = irq_lock();
 	udc_ep_set_busy(dev, ep, false);
 	irq_unlock(key);
 
 	if (buf == NULL) {
+#if HPM_UDC_USE_NOCACHE
+		udc_hpm_nocache_free(hpm_buf);
+#endif
 		udc_submit_event(dev, UDC_EVT_ERROR, -ENOBUFS);
 		return -ENOBUFS;
 	}
@@ -712,6 +856,12 @@ static int udc_hpm_handler_in(const struct device *dev, uint8_t ep,
 	struct net_buf *buf;
 	unsigned int key;
 
+#if HPM_UDC_USE_NOCACHE
+	/* IN data is no longer needed once completed. Release it before ZLP
+	 * re-prime replaces attached_buffer, and even if the FIFO is empty. */
+	udc_hpm_nocache_free(udc_hpm_dma_take(dev, ep));
+	hpm_buf = NULL;
+#endif
 	buf = udc_buf_peek(dev, ep);
 	if (buf == NULL) {
 		udc_submit_event(dev, UDC_EVT_ERROR, -ENOBUFS);
@@ -781,7 +931,7 @@ static void udc_hpm_isr(const struct device *dev)
 		}
 #endif
 		/* Prime EP0 QH first, then re-open EP0 like other Zephyr UDC drivers. */
-		usb_device_bus_reset(handle, USB_HPM_EP0_SIZE);
+		udc_hpm_bus_reset(dev);
 		cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
 		if (cfg->stat.enabled) {
 			udc_ep_disable_internal(dev, USB_CONTROL_EP_OUT);
@@ -998,17 +1148,25 @@ static int udc_hpm_ep_dequeue(const struct device *dev,
 			struct udc_ep_config *const cfg)
 {
 	struct net_buf *buf;
+	struct udc_hpm_data *priv = udc_get_private(dev);
 	unsigned int key;
+	int err;
 
+	key = irq_lock();
+	priv->dma_epoch[ep_addr2idx(cfg->addr)]++;
+	err = udc_hpm_dma_abort(dev, cfg->addr);
+	if (err) {
+		irq_unlock(key);
+		return err;
+	}
+	udc_hpm_dma_release(dev, cfg->addr);
+	udc_ep_set_busy(dev, cfg->addr, false);
 	cfg->stat.halted = false;
 	buf = udc_buf_get_all(dev, cfg->addr);
+	irq_unlock(key);
 	if (buf) {
 		udc_submit_ep_event(dev, buf, -ECONNABORTED);
 	}
-
-	key = irq_lock();
-	udc_ep_set_busy(dev, cfg->addr, false);
-	irq_unlock(key);
 
 	return 0;
 }
@@ -1059,10 +1217,22 @@ static int udc_hpm_ep_disable(const struct device *dev,
 {
 	struct udc_hpm_data *priv = udc_get_private(dev);
 	usb_device_handle_t *handle = &priv->handle;
+	unsigned int key;
+	int err;
 
 	LOG_DBG("Disable ep 0x%02x", cfg->addr);
 
+	key = irq_lock();
+	priv->dma_epoch[ep_addr2idx(cfg->addr)]++;
+	err = udc_hpm_dma_abort(dev, cfg->addr);
+	if (err) {
+		irq_unlock(key);
+		return err;
+	}
 	usb_device_edpt_close(handle, cfg->addr);
+	udc_hpm_dma_release(dev, cfg->addr);
+	udc_ep_set_busy(dev, cfg->addr, false);
+	irq_unlock(key);
 
 	return 0;
 }
@@ -1091,7 +1261,7 @@ static int udc_hpm_enable(const struct device *dev)
 	 * Soft-connect only here. Zephyr opens EP0 right after udc_enable();
 	 * priming QH now means the first host reset/setup sees a valid EP0 list.
 	 */
-	usb_device_bus_reset(handle, USB_HPM_EP0_SIZE);
+	udc_hpm_bus_reset(dev);
 	handle->regs->USBCMD |= USB_USBCMD_RS_MASK;
 	usb_device_connect(handle);
 
@@ -1143,7 +1313,7 @@ static int udc_hpm_init(const struct device *dev)
 	usb_device_init(handle, int_mask);
 	/* usb_device_init() connects; drop pull-up until stack enables us. */
 	config->base->USBCMD &= ~USB_USBCMD_RS_MASK;
-	usb_device_bus_reset(handle, USB_HPM_EP0_SIZE);
+	udc_hpm_bus_reset(dev);
 
 	config->irq_enable_func(dev);
 
@@ -1157,12 +1327,23 @@ static int udc_hpm_shutdown(const struct device *dev)
 	const struct udc_hpm_config *config = dev->config;
 	struct udc_hpm_data *priv = udc_get_private(dev);
 	usb_device_handle_t *handle = &priv->handle;
+	unsigned int key;
 
 	/* Disable interrupt */
 	config->irq_disable_func(dev);
 
+	key = irq_lock();
+	for (uint8_t idx = 0; idx < USB_SOS_DCD_MAX_QHD_COUNT; idx++) {
+		priv->dma_epoch[idx]++;
+	}
 	/* De-init HPM USB device driver. */
 	usb_device_deinit(handle);
+	for (uint8_t idx = 0; idx < USB_SOS_DCD_MAX_QHD_COUNT; idx++) {
+		uint8_t ep = (idx / 2u) | ((idx & 1u) ? 0x80u : 0u);
+
+		udc_hpm_dma_release(dev, ep);
+	}
+	irq_unlock(key);
 
 	return 0;
 }
