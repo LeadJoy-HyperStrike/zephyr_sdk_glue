@@ -138,13 +138,22 @@ static int cherryusb_hpm_driver_preinit(const struct device *dev)
 
 	pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
 
+	usb_hcd_set_power_ctrl_polarity((USB_Type *)config->reg_base, true);
+#if defined(CONFIG_SOC_SERIES_HPM5100)
 	/*
 	 * Match HPM5100EVK board_init_usb(): QFN/LQFP parts have no VBUS
 	 * pin, so the PHY must use internal VBUS after PWR polarity settles.
 	 */
-	usb_hcd_set_power_ctrl_polarity((USB_Type *)config->reg_base, true);
 	k_busy_wait(100 * 1000);
 	usb_phy_using_internal_vbus((USB_Type *)config->reg_base);
+#else
+	/*
+	 * Other SoCs keep the pre-merge sequence. Internal VBUS makes the PHY
+	 * ignore the VBUS pin, i.e. no disconnect detection; udc_hpmicro.c
+	 * gates the same call to HPM5100 (c0b0b7f).
+	 */
+	k_sleep(K_MSEC(100));
+#endif
 
 	return 0;
 }
@@ -189,7 +198,9 @@ static int cherryusb_hpm_pm_action(const struct device *dev,
 
 		usb_hcd_set_power_ctrl_polarity((USB_Type *)config->reg_base,
 						true);
+#if defined(CONFIG_SOC_SERIES_HPM5100)
 		usb_phy_using_internal_vbus((USB_Type *)config->reg_base);
+#endif
 
 		priv->pm_suspended = false;
 		return 0;

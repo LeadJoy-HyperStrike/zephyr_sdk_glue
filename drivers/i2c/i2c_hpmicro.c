@@ -27,16 +27,19 @@
  * Two implementations share this file since the 2026-10-12 vendor HPM5100
  * drop (sdk_glue vendor/hpm5100-2026-10-12):
  *
- * - CONFIG_SOC_SERIES_HPM5100: the vendor driver, verbatim (SDK polling
- *   helpers for single-message transfers, 100 ms completion wait, reworked
- *   address-hit / NACK handling in the ISR).
+ * - CONFIG_SOC_SERIES_HPM5100: the vendor driver (SDK polling helpers for
+ *   single-message transfers, 100 ms completion wait, reworked address-hit /
+ *   NACK handling in the ISR), verbatim except for the ISR's message
+ *   accounting, which is fixed the same way as the other branch (the vendor
+ *   text read past the caller's msgs array and wrapped nr_msgs).
  * - every other SoC: the pre-merge driver, verbatim. HS2 (HPM6E80) images
  *   must not change: the touchpad rides on its bus-time-bounded transfers,
  *   RM-ordered abort, refusal of mis-sequenced message shapes and
  *   arm-before-launch interrupt enabling.
  *
- * The config/transfer structs, configure(), target (un)register, init and
- * the instance macros are identical in both and shared.
+ * Shared below: the config/transfer structs, init and the instance macros.
+ * configure() and target (un)register are identical in both versions but
+ * stay inside each branch, so each branch is one contiguous block.
  */
 struct hpmicro_i2c_config {
 	I2C_Type *base;
@@ -428,12 +431,17 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_isr(const struct device
 			}
 			if ((transfer->curr_index == transfer->curr_len) && (transfer->curr_len > 0)) {
 				i2c_disable_irq(i2c, I2C_EVENT_FIFO_FULL);
-				transfer->msgs++;
+				/* Retire the message first and advance only while one is
+				 * left: advancing first read msgs[num_msgs], past the
+				 * caller's array, whenever the last READ ended on a full
+				 * FIFO (any multiple of the 4-byte HPM5151 FIFO).
+				 */
 				transfer->nr_msgs--;
-				transfer->curr_buf = transfer->msgs->buf;
-				transfer->curr_len = transfer->msgs->len;
-				transfer->curr_index = 0;
 				if (transfer->nr_msgs != 0) {
+					transfer->msgs++;
+					transfer->curr_buf = transfer->msgs->buf;
+					transfer->curr_len = transfer->msgs->len;
+					transfer->curr_index = 0;
 					if (hpmicro_restart_i2c(dev, transfer->curr_len) < 0) {
 						i2c->CTRL |= I2C_CTRL_PHASE_STOP_MASK;
 					}
@@ -474,6 +482,14 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_isr(const struct device
 					break;
 				}
 			}
+		}
+
+		/* The receive path may already have retired the last message;
+		 * decrementing again would wrap nr_msgs and restart past the array.
+		 */
+		if (transfer->nr_msgs == 0U) {
+			k_sem_give(&data->completion);
+			return;
 		}
 
 		transfer->nr_msgs--;
