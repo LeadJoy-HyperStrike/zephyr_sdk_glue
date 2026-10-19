@@ -67,8 +67,8 @@ manifest:
       repo-path: fatfs
       path: modules/fs/fatfs
       revision: 427159bf95ea49b7680facffaa29ad506b42709b
-    - name: mcuboot          # HPMicro's own entry, for samples/boot/*. HS2 boots without a
-                             # bootloader; hs2_hpm_firmware/west.yml blocklists this project.
+    - name: mcuboot          # HPMicro's own entry (their MCUboot support, e.g. samples/boot/*).
+                             # HS2 boots without a bootloader; hs2_hpm_firmware/west.yml blocklists it.
       repo-path: mcuboot
       revision: c098a7fe3aa03f8e21b6fe083dd8d9704db78a03
       path: bootloader/mcuboot

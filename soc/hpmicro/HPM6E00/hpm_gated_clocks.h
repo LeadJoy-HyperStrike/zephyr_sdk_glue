@@ -54,11 +54,13 @@
  *   watchdog0-3 no node and no wdt_* caller, but CONFIG_WATCHDOG=y is still
  *               set, and gating a watchdog's clock turns a missed feed into a
  *               reset. Bad trade for four blocks.
- *   kman, rng, sdp, pka   crypto. The app never asks for entropy and verifies
- *               nothing itself (the BootROM checks the image before it runs),
- *               so these look free -- but shipped images execute through the
- *               EXIP decryption the BootROM set up, and nothing here shows
- *               which of these blocks that path still needs after boot.
+ *   kman, rng, sdp, pka   crypto. The app never asks for entropy and does no
+ *               crypto in hardware (hs2img's readback SHA-256 is software,
+ *               lib/hs2_sha256; signatures are the BootROM's job), so these
+ *               look free -- but shipped images execute through EXIP. RM V0.8
+ *               76.2.2: the KEK reaches EXIP over OTP's own datapath and the
+ *               BootROM does the unwrap, so none of these should be on that
+ *               path; nobody has gated them on an EXIP board to prove it.
  *   ana0-3, aud0-1, ref0-1   clock SOURCES feeding ADC/I2S/pins, not
  *               peripherals. The ADC tree is downstream of them.
  *

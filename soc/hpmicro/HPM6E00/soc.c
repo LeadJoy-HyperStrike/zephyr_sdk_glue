@@ -202,10 +202,10 @@ static void soc_init_clock(void)
      * single placement is safe on its own, because this function can run from
      * two entry states -- cold boot from the BootROM (CPU at 24 MHz or the
      * preset value, DCDC at its reset default) and warm chainload from a
-     * bootloader (CPU wherever it left it; HS2 has had none since 2026-09-02).
-     * An earlier version set the target voltage here, before the PLL retune,
-     * which clocked the cores at the bootloader's 600 MHz on the 400 MHz bin's
-     * 1.075 V -- outside every row of table 12.
+     * bootloader (CPU wherever it left it; HS2 chainloaded from MCUboot until
+     * 2026-09-02). An earlier version set the target voltage here, before the
+     * PLL retune, which clocked the cores at MCUboot's 600 MHz on the 400 MHz
+     * bin's 1.075 V -- outside every row of table 12.
      *
      * So: park at the 600 MHz voltage across the transition (safe for any
      * frequency this SoC supports), then settle to the target bin once the
