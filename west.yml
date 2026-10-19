@@ -8,7 +8,7 @@
 
 ########################################
 ##  zephyr                    v3.7.0  ##
-##  hpm_sdk                   v1.11.0 ##
+##  hpm_sdk   v1.11.0-hpm5100 (local) ##
 ########################################
 manifest:
   version: "1.0"
@@ -35,7 +35,8 @@ manifest:
     - name: sdk_env
       repo-path: sdk_env
       path: sdk_env
-      revision: v1.11.0
+      # Local branch hpm5100-v1.11.0 / tag v1.11.0-hpm5100 (not pushed).
+      revision: 4274f9203c17db6fdddeefd97f3b5440fd4ce364
       submodules: true
     - name: canopennode
       repo-path: canopennode
@@ -58,6 +59,10 @@ manifest:
       repo-path: mcuboot
       revision: c098a7fe3aa03f8e21b6fe083dd8d9704db78a03
       path: bootloader/mcuboot
+    - name: zcbor
+      url: https://github.com/zephyrproject-rtos/zcbor
+      revision: 75d088037eb237b18e7ec1f47c9ce494b9b95aab
+      path: modules/lib/zcbor
 
 
   # West-related configuration for the sdk_glue repository.

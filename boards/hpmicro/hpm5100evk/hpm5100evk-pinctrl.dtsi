@@ -13,12 +13,44 @@
 		};
 	};
 
+	/*
+	 * PMIC-domain PUART: PY00 TX / PY01 RX through PIOC alt1.
+	 * These pins cannot be used by SOC I2C0 at the same time.
+	 */
+	pinmux_puart: pinmux_puart {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 0), IOC_TYPE_PIOC, 0, 1)>,
+					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 1), IOC_TYPE_PIOC, 0, 1)>;
+			input-enable;
+		};
+	};
+
+	/* UART1: PA07 TX / PA06 RX (alt2). Board default unused. */
 	pinmux_uart1: pinmux_uart1 {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 7), IOC_TYPE_IOC, 0, 2)>,
+					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 6), IOC_TYPE_IOC, 0, 2)>;
+		};
+	};
+
+	/*
+	 * UART2 (SDK BOARD_APP_UART): PY07 TX / PY06 RX + PIOC SOC_GPIO_Y.
+	 * TX shares WKUP; high baud may need the WKUP-side capacitor removed.
+	 */
+	pinmux_uart2: pinmux_uart2 {
 		group0 {
 			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 7), IOC_TYPE_IOC, 0, 2)>,
 					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 6), IOC_TYPE_IOC, 0, 2)>,
 					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 7), IOC_TYPE_PIOC, 0, 3)>,
 					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 6), IOC_TYPE_PIOC, 0, 3)>;
+		};
+	};
+
+	/* UART3 (SDK LIN sample): PC00 TX / PC05 RX. */
+	pinmux_uart3: pinmux_uart3 {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 0), IOC_TYPE_IOC, 0, 2)>,
+					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 5), IOC_TYPE_IOC, 0, 2)>;
 		};
 	};
 
@@ -34,16 +66,22 @@
 		};
 	};
 
-	/* BOARD_APP_I2C = I2C1: PY03 SCL / PY02 SDA (SDK init_i2c1_pins) */
+	/* BOARD_APP_I2C = I2C1: PY03 SCL / PY02 SDA (SDK init_i2c1_pins).
+	 * SCL needs LOOP_BACK (input-enable); both OD + pull-up like SDK PAD_CTL.
+	 */
 	pinmux_i2c1: pinmux_i2c1 {
 		group0 {
 			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 3), IOC_TYPE_IOC, 0, 4)>,
-					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 2), IOC_TYPE_IOC, 0, 4)>,
-					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 3), IOC_TYPE_PIOC, 0, 3)>,
-					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 2), IOC_TYPE_PIOC, 0, 3)>;
+					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 3), IOC_TYPE_PIOC, 0, 3)>;
 			drive-open-drain;
 			bias-pull-up;
 			input-enable;
+		};
+		group1 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 2), IOC_TYPE_IOC, 0, 4)>,
+					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTY, 2), IOC_TYPE_PIOC, 0, 3)>;
+			drive-open-drain;
+			bias-pull-up;
 		};
 	};
 
@@ -56,16 +94,51 @@
 		};
 	};
 
-	/* SPI3: CS/SCLK/MOSI/MISO — match SDK init_spi3_pins (HW CS on PC06).
-	 * input-enable on SCLK group enables LOOP_BACK like SDK.
-	 */
+	/* SPI3: LOOP_BACK only on SCLK; keeper off; DS=r111 (PC15 ADC load). */
 	pinmux_spi3: pinmux_spi3 {
 		group0 {
-			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 6), IOC_TYPE_IOC, 0, 5)>,
-					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 10), IOC_TYPE_IOC, 0, 5)>,
-					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 13), IOC_TYPE_IOC, 0, 5)>,
-					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 15), IOC_TYPE_IOC, 0, 5)>;
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 6), IOC_TYPE_IOC, 0, 5)>;
+			bias-pull-up;
+			keeper-capability-disable;
+			drive-strength = "r111";
+			slew-rate = "fast";
+			slew-pd = "200M";
+		};
+		group1 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 10), IOC_TYPE_IOC, 0, 5)>;
 			input-enable;
+			keeper-capability-disable;
+			drive-strength = "r111";
+			slew-rate = "fast";
+			slew-pd = "200M";
+		};
+		group2 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 13), IOC_TYPE_IOC, 0, 5)>,
+					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 15), IOC_TYPE_IOC, 0, 5)>;
+			keeper-capability-disable;
+			drive-strength = "r111";
+			slew-rate = "fast";
+			slew-pd = "200M";
+		};
+	};
+
+	/* SPI3 data pins only — PC06 used as GPIO CS (SDK init_spi3_pins_with_gpio_as_cs). */
+	pinmux_spi3_gpio_cs: pinmux_spi3_gpio_cs {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 10), IOC_TYPE_IOC, 0, 5)>;
+			input-enable;
+			keeper-capability-disable;
+			drive-strength = "r111";
+			slew-rate = "fast";
+			slew-pd = "200M";
+		};
+		group1 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 13), IOC_TYPE_IOC, 0, 5)>,
+					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 15), IOC_TYPE_IOC, 0, 5)>;
+			keeper-capability-disable;
+			drive-strength = "r111";
+			slew-rate = "fast";
+			slew-pd = "200M";
 		};
 	};
 
@@ -76,6 +149,18 @@
 					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTB, 0), IOC_TYPE_IOC, 0, 8)>,
 					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTB, 8), IOC_TYPE_IOC, 0, 8)>,
 					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTB, 4), IOC_TYPE_IOC, 0, 8)>;
+			input-enable;
+		};
+	};
+
+	/* BOARD_APP_CAN = MCAN0: PA19 TX / PA20 RX (SDK init_can_pins). */
+	pinmux_mcan0: pinmux_mcan0 {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 19), IOC_TYPE_IOC, 0, 7)>;
+		};
+
+		group1 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 20), IOC_TYPE_IOC, 0, 7)>;
 			input-enable;
 		};
 	};
@@ -112,6 +197,16 @@
 	pinmux_adc0: pinmux_adc0 {
 		group0 {
 			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 5), IOC_TYPE_IOC, 1, 0)>;
+		};
+	};
+
+	/* BOARD_APP_PWM = PWM3: PA16 P_0 / PA17 P_1 (SDK init_pwm3_pins, alt16).
+	 * PA18 is board LED (GPIO); do not mux as PWM3_P_2 here.
+	 */
+	pinmux_pwm3: pinmux_pwm3 {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 16), IOC_TYPE_IOC, 0, 16)>,
+					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 17), IOC_TYPE_IOC, 0, 16)>;
 		};
 	};
 };

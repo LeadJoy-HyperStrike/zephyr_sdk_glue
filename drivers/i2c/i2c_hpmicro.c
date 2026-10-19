@@ -124,15 +124,58 @@ static int hpmicro_i2c_transfer(const struct device *dev,
 	struct hpmicro_i2c_data *data = dev->data;
 	int ret = 0;
 	uint32_t ctrl = 0;
+	hpm_stat_t stat;
+
 	if (!num_msgs) {
 		return 0;
 	}
-	
+
 	if (msgs->len > I2C_SOC_TRANSFER_COUNT_MAX) {
 		return -EINVAL;
 	}
 
 	k_mutex_lock(&data->mutex, K_FOREVER);
+
+	/*
+	 * Address probe / simple master write-read: use SDK polling helpers so
+	 * ADDRHIT (slave ACK) is judged the same way as hpm_sdk i2c_master_write.
+	 * The IRQ path historically reported false ACK on empty buses.
+	 */
+	if (!data->slave && num_msgs == 1U &&
+	    ((msgs->flags & I2C_MSG_RW_MASK) == I2C_MSG_WRITE)) {
+		if (msgs->flags & I2C_MSG_ADDR_10_BITS) {
+			i2c_enable_10bit_address_mode(cfg->base, true);
+		} else {
+			i2c_enable_10bit_address_mode(cfg->base, false);
+		}
+		stat = i2c_master_write(cfg->base, addr, msgs->buf, msgs->len);
+		k_mutex_unlock(&data->mutex);
+		if (stat == status_i2c_no_addr_hit) {
+			return -ENXIO;
+		}
+		if (stat != status_success) {
+			return -EIO;
+		}
+		return 0;
+	}
+
+	if (!data->slave && num_msgs == 1U &&
+	    ((msgs->flags & I2C_MSG_RW_MASK) == I2C_MSG_READ)) {
+		if (msgs->flags & I2C_MSG_ADDR_10_BITS) {
+			i2c_enable_10bit_address_mode(cfg->base, true);
+		} else {
+			i2c_enable_10bit_address_mode(cfg->base, false);
+		}
+		stat = i2c_master_read(cfg->base, addr, msgs->buf, msgs->len);
+		k_mutex_unlock(&data->mutex);
+		if (stat == status_i2c_no_addr_hit) {
+			return -ENXIO;
+		}
+		if (stat != status_success) {
+			return -EIO;
+		}
+		return 0;
+	}
 
 	data->transfer.msgs = msgs;
 	data->transfer.curr_buf = msgs->buf;
@@ -141,48 +184,51 @@ static int hpmicro_i2c_transfer(const struct device *dev,
 	data->transfer.nr_msgs = num_msgs;
 	data->transfer.addr = addr;
 	data->transfer.status = HPM_I2C_STATUS_SLAVE_IDLE;
-	
+
 	if (data->slave) {
 		i2c_enable_irq(cfg->base, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE);
 	} else {
 		if (data->transfer.msgs->flags & I2C_MSG_ADDR_10_BITS) {
-				i2c_enable_10bit_address_mode(cfg->base, true);
+			i2c_enable_10bit_address_mode(cfg->base, true);
 		} else {
-				i2c_enable_10bit_address_mode(cfg->base, false);
+			i2c_enable_10bit_address_mode(cfg->base, false);
 		}
-		/* W1C, clear CMPL bit to avoid blocking the transmission */
-		cfg->base->STATUS = I2C_STATUS_CMPL_MASK;
+		/* W1C sticky bits before starting */
+		cfg->base->STATUS = I2C_STATUS_CMPL_MASK | I2C_STATUS_ADDRHIT_MASK;
 		cfg->base->CMD = I2C_CMD_CLEAR_FIFO;
 		cfg->base->ADDR = I2C_ADDR_ADDR_SET(data->transfer.addr);
 		if ((data->transfer.msgs->flags & I2C_MSG_RW_MASK) == I2C_MSG_WRITE) {
-				ctrl |= I2C_CTRL_DIR_SET(I2C_DIR_MASTER_WRITE);
+			ctrl |= I2C_CTRL_DIR_SET(I2C_DIR_MASTER_WRITE);
 		} else {
-				ctrl |= I2C_CTRL_DIR_SET(I2C_DIR_MASTER_READ);
+			ctrl |= I2C_CTRL_DIR_SET(I2C_DIR_MASTER_READ);
 		}
-			/* start signal */
-			ctrl |= I2C_CTRL_PHASE_START_SET(true) | I2C_CTRL_PHASE_ADDR_SET(true);
-			/* end signal*/
-			if (data->transfer.msgs->flags & I2C_MSG_STOP) {
-					ctrl |= I2C_CTRL_PHASE_STOP_SET(true);
-			} else {
-					ctrl |= I2C_CTRL_PHASE_STOP_SET(false);
-			}
-			if (data->transfer.curr_len > 0) {
-				ctrl |= I2C_CTRL_PHASE_DATA_SET(true)
+		ctrl |= I2C_CTRL_PHASE_START_SET(true) | I2C_CTRL_PHASE_ADDR_SET(true);
+		if (data->transfer.msgs->flags & I2C_MSG_STOP) {
+			ctrl |= I2C_CTRL_PHASE_STOP_SET(true);
+		} else {
+			ctrl |= I2C_CTRL_PHASE_STOP_SET(false);
+		}
+		if (data->transfer.curr_len > 0) {
+			ctrl |= I2C_CTRL_PHASE_DATA_SET(true)
 #ifdef I2C_CTRL_DATACNT_HIGH_MASK
-													| I2C_CTRL_DATACNT_HIGH_SET(I2C_DATACNT_MAP(data->transfer.curr_len) >> 8U)
+				| I2C_CTRL_DATACNT_HIGH_SET(I2C_DATACNT_MAP(data->transfer.curr_len) >> 8U)
 #endif
-													| I2C_CTRL_DATACNT_SET(I2C_DATACNT_MAP(data->transfer.curr_len));
-			}
-			cfg->base->CTRL = ctrl;
-			cfg->base->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
+				| I2C_CTRL_DATACNT_SET(I2C_DATACNT_MAP(data->transfer.curr_len));
+		}
+		cfg->base->CTRL = ctrl;
+		cfg->base->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
+		i2c_enable_irq(cfg->base, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE);
 	}
-	i2c_enable_irq(cfg->base, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE);
-	k_sem_take(&data->completion, K_FOREVER);
-	k_mutex_unlock(&data->mutex);
-	if (data->transfer.status == HPM_I2C_STATUS_NOT_ADDRHIT) {
+
+	if (k_sem_take(&data->completion, K_MSEC(100)) != 0) {
+		i2c_disable_irq(cfg->base, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE |
+					   I2C_EVENT_FIFO_EMPTY | I2C_EVENT_FIFO_FULL);
+		ret = -ETIMEDOUT;
+	} else if (data->transfer.status == HPM_I2C_STATUS_NOT_ADDRHIT) {
 		ret = -ENXIO;
 	}
+
+	k_mutex_unlock(&data->mutex);
 	return ret;
 }
 
@@ -305,34 +351,27 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_isr(const struct device
 	status = i2c_get_status(i2c);
 	irq = i2c_get_irq_setting(i2c);
 
-	/* slave address hit */
-	if (((status & I2C_EVENT_ADDRESS_HIT)) && (irq & I2C_EVENT_ADDRESS_HIT)) {
+	/* Address hit = slave ACK (master) / addressed (slave). Do not treat
+	 * every other IRQ as NACK — that raced with COMPLETE and broke probes.
+	 */
+	if ((status & I2C_EVENT_ADDRESS_HIT) && (irq & I2C_EVENT_ADDRESS_HIT)) {
 		data->transfer.status = HPM_I2C_STATUS_ADDRHIT;
-			i2c_clear_status(i2c, I2C_EVENT_ADDRESS_HIT);
-			if (data->slave) {
-				if (I2C_DIR_SLAVE_READ == i2c_get_direction(i2c)) {
-						i2c_enable_irq(i2c, I2C_EVENT_FIFO_FULL);
-						data->slave->callbacks->write_requested(data->slave);
-				} else {
-						data->transfer.status = HPM_I2C_STATUS_SLAVE_BEGIN_WRITE;
-						i2c_enable_irq(i2c, I2C_EVENT_FIFO_EMPTY);
-				}
-				i2c_disable_irq(i2c, I2C_EVENT_ADDRESS_HIT);
-				i2c_clear_status(i2c, I2C_EVENT_ADDRESS_HIT);
+		i2c_clear_status(i2c, I2C_EVENT_ADDRESS_HIT);
+		i2c_disable_irq(i2c, I2C_EVENT_ADDRESS_HIT);
+		if (data->slave) {
+			if (I2C_DIR_SLAVE_READ == i2c_get_direction(i2c)) {
+				i2c_enable_irq(i2c, I2C_EVENT_FIFO_FULL);
+				data->slave->callbacks->write_requested(data->slave);
 			} else {
-				if ((data->transfer.msgs->flags & I2C_MSG_RW_MASK) == I2C_MSG_WRITE) {
-						i2c_enable_irq(i2c, I2C_EVENT_FIFO_EMPTY);
-				} else {
-						i2c_enable_irq(i2c, I2C_EVENT_FIFO_FULL);
-				}
+				data->transfer.status = HPM_I2C_STATUS_SLAVE_BEGIN_WRITE;
+				i2c_enable_irq(i2c, I2C_EVENT_FIFO_EMPTY);
 			}
-	} else {
-		if (data->transfer.status != HPM_I2C_STATUS_ADDRHIT) {
-			data->transfer.status = HPM_I2C_STATUS_NOT_ADDRHIT;
-			i2c_disable_irq(i2c, I2C_EVENT_FIFO_FULL | I2C_EVENT_FIFO_EMPTY);
-			i2c->CTRL = I2C_CTRL_PHASE_STOP_SET(true);
-      i2c->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
-			k_sem_give(&data->completion);
+		} else if (data->transfer.curr_len > 0U) {
+			if ((data->transfer.msgs->flags & I2C_MSG_RW_MASK) == I2C_MSG_WRITE) {
+				i2c_enable_irq(i2c, I2C_EVENT_FIFO_EMPTY);
+			} else {
+				i2c_enable_irq(i2c, I2C_EVENT_FIFO_FULL);
+			}
 		}
 	}
 
@@ -387,41 +426,49 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_isr(const struct device
 
 	/* complete */
 	if (status & I2C_EVENT_TRANSACTION_COMPLETE) {
-			i2c_disable_irq(i2c, I2C_EVENT_TRANSACTION_COMPLETE | I2C_EVENT_FIFO_FULL | I2C_EVENT_FIFO_EMPTY);
-			i2c_clear_status(i2c, I2C_EVENT_TRANSACTION_COMPLETE);
-			if (data->slave) {
-				if (I2C_DIR_MASTER_READ == i2c_get_direction(i2c)) {
-					while (!i2c_fifo_is_empty(i2c)) {
-						data->slave->callbacks->write_received(data->slave, i2c_read_byte(i2c));
-					}
-				}
-				data->slave->callbacks->stop(data->slave);
-				k_sem_give(&data->completion);
-				return;
-			}
+		i2c_disable_irq(i2c, I2C_EVENT_TRANSACTION_COMPLETE | I2C_EVENT_FIFO_FULL |
+				     I2C_EVENT_FIFO_EMPTY | I2C_EVENT_ADDRESS_HIT);
+		i2c_clear_status(i2c, I2C_EVENT_TRANSACTION_COMPLETE);
+		if (data->slave) {
 			if (I2C_DIR_MASTER_READ == i2c_get_direction(i2c)) {
-					while ((!i2c_fifo_is_empty(i2c)) && (transfer->curr_index < transfer->curr_len)) {
-							transfer->curr_buf[transfer->curr_index++] = i2c_read_byte(i2c);
-							if (transfer->curr_index == transfer->curr_len) {
-									break;
-							}
-					}
-			}
-			if (!transfer->nr_msgs) {
-				k_sem_give(&data->completion);
-			} else {
-				transfer->nr_msgs--;
-				if ((transfer->nr_msgs > 0) && (data->transfer.status == HPM_I2C_STATUS_ADDRHIT)) {
-					transfer->msgs++;
-					transfer->curr_buf = transfer->msgs->buf;
-					transfer->curr_len = transfer->msgs->len;
-					transfer->curr_index = 0;
-					hpmicro_restart_i2c(dev, data->transfer.curr_len);
-				} else {
-					k_sem_give(&data->completion);
+				while (!i2c_fifo_is_empty(i2c)) {
+					data->slave->callbacks->write_received(data->slave,
+										i2c_read_byte(i2c));
 				}
-
 			}
+			data->slave->callbacks->stop(data->slave);
+			k_sem_give(&data->completion);
+			return;
+		}
+
+		/* Master: no ADDRHIT means NACK / empty address. */
+		if (data->transfer.status != HPM_I2C_STATUS_ADDRHIT) {
+			data->transfer.status = HPM_I2C_STATUS_NOT_ADDRHIT;
+			k_sem_give(&data->completion);
+			return;
+		}
+
+		if (I2C_DIR_MASTER_READ == i2c_get_direction(i2c)) {
+			while ((!i2c_fifo_is_empty(i2c)) &&
+			       (transfer->curr_index < transfer->curr_len)) {
+				transfer->curr_buf[transfer->curr_index++] = i2c_read_byte(i2c);
+				if (transfer->curr_index == transfer->curr_len) {
+					break;
+				}
+			}
+		}
+
+		transfer->nr_msgs--;
+		if ((transfer->nr_msgs > 0U) &&
+		    (data->transfer.status == HPM_I2C_STATUS_ADDRHIT)) {
+			transfer->msgs++;
+			transfer->curr_buf = transfer->msgs->buf;
+			transfer->curr_len = transfer->msgs->len;
+			transfer->curr_index = 0;
+			hpmicro_restart_i2c(dev, data->transfer.curr_len);
+		} else {
+			k_sem_give(&data->completion);
+		}
 	}
 }
 

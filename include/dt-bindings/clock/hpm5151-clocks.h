@@ -9,7 +9,7 @@
 
 /*
  * Auto-generated from HPM5151 clock/sysctl headers in:
- * sdk_env_v1.12.0_hpm5100_er_2026.06.30/hpm_sdk/soc/HPM5100/HPM5151
+ * sdk_env/hpm_sdk/soc/HPM5100/HPM5151
  */
 #define CLK_SRC_OSC24M  0
 #define CLK_SRC_PLL0_CLK0  1

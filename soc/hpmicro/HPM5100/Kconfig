@@ -6,6 +6,8 @@ config SOC_SERIES_HPM5100
 	select RISCV_PRIVILEGED
 	select RISCV_HAS_PLIC
 	select DYNAMIC_INTERRUPTS
+	select HAS_PM
+	select HAS_POWEROFF
 	help
 	  Enable support for HPMicro HPM51 series SoC
 
@@ -73,5 +75,13 @@ config SOC_ANDES_V5_PMA
 		configure physical memory attribute by PMA CSRs. The address
 		matching of Andes V5 PMA is like RISC-V PMP NAPOT mode
 		(power-of-two alignment).
+
+config SOC_HPM5100_CPU_IDLE_WAIT
+	bool "Gate CPU clock in arch_cpu_idle (Wait mode)"
+	default y
+	help
+		When enabled, arch_cpu_idle() sets sysctl CPU0 low-power mode to
+		gate the CPU clock before executing WFI, matching the HPM SDK
+		Wait mode entry path.
 
 endif # SOC_SERIES_HPM5100

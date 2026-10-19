@@ -326,10 +326,49 @@ SECTIONS
  */
 #include <snippets-data-sections.ld>
 
-    __data_region_end = .;
+    /*
+     * CherryUSB (and some SDK USB buffers) use section ".nocache".
+     * Without an output section, GNU ld dumps the orphan into IDT_LIST.
+     * USB DMA on HPM5151 must use AHB SRAM (HRAM). If the kernel RAM
+     * chosen node is already HRAM, keep .nocache there; if the sample
+     * moves zephyr,sram to DLM, put .nocache in the HRAM "SRAM" region.
+     *
+     * When .nocache is outside kernel RAM, close __data_region_end /
+     * __kernel_ram_end first. Otherwise z_data_copy() uses a size that
+     * spans DLM through HRAM (~4GB) and never reaches main.
+     */
+#if DT_NODE_EXISTS(DT_NODELABEL(hram)) && \
+    (DT_DEP_ORD(DT_CHOSEN(zephyr_sram)) != DT_DEP_ORD(DT_NODELABEL(hram)))
+#define HPM_NOCACHE_LINK_REGION SRAM
+#define HPM_NOCACHE_OUTSIDE_KERNEL_RAM 1
+#else
+#define HPM_NOCACHE_LINK_REGION RAMABLE_REGION
+#endif
 
-	__kernel_ram_end = .;
-	__kernel_ram_size = __kernel_ram_end - __kernel_ram_start;
+#ifdef HPM_NOCACHE_OUTSIDE_KERNEL_RAM
+    __data_region_end = .;
+    __kernel_ram_end = .;
+    __kernel_ram_size = __kernel_ram_end - __kernel_ram_start;
+#endif
+
+    SECTION_DATA_PROLOGUE(.nocache,,)
+	{
+		. = ALIGN(4);
+		__nocache_ram_start = .;
+		*(.nocache)
+		*(".nocache.*")
+		. = ALIGN(4);
+		__nocache_ram_end = .;
+	} GROUP_DATA_LINK_IN(HPM_NOCACHE_LINK_REGION, ROMABLE_REGION)
+
+    __nocache_ram_size = __nocache_ram_end - __nocache_ram_start;
+    __nocache_load_start = LOADADDR(.nocache);
+
+#ifndef HPM_NOCACHE_OUTSIDE_KERNEL_RAM
+    __data_region_end = .;
+    __kernel_ram_end = .;
+    __kernel_ram_size = __kernel_ram_end - __kernel_ram_start;
+#endif
 
 #if DT_NODE_HAS_STATUS(DT_CHOSEN(zephyr_itcm), okay)
 GROUP_START(ITCM)

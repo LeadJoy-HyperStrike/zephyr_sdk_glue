@@ -15,4 +15,10 @@ boards:
   hpm6e00evk/hpm6e80:
     append:
       EXTRA_DTC_OVERLAY_FILE: boards/hpm6e00evk.overlay
+  hpm5100evk:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: boards/hpm5100evk.overlay
+  hpm5100evk/hpm5151:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: boards/hpm5100evk.overlay
 

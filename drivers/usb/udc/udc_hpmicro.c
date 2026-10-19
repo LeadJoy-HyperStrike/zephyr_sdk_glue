@@ -15,6 +15,8 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/drivers/usb/udc.h>
 #include <zephyr/drivers/pinctrl.h>
+#include <zephyr/pm/device.h>
+#include <zephyr/pm/policy.h>
 
 #include "../udc/udc_common.h"
 #include "hpm_clock_drv.h"
@@ -62,7 +64,36 @@ struct udc_hpm_config {
 
 struct udc_hpm_data {
 	usb_device_handle_t handle;
+	bool pm_suspended;
+	bool pm_deep_locked;
 };
+
+/*
+ * USB PHY / QTD state does not survive SoC Stop. Block idle Stop/soft-off
+ * from driver preinit until udc_shutdown(); applications that need Stop
+ * must shut the UDC down first and re-enumerate after wake.
+ */
+static void udc_hpm_lock_deep_sleep(struct udc_hpm_data *priv)
+{
+	if (priv->pm_deep_locked) {
+		return;
+	}
+
+	pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+	pm_policy_state_lock_get(PM_STATE_SOFT_OFF, PM_ALL_SUBSTATES);
+	priv->pm_deep_locked = true;
+}
+
+static void udc_hpm_unlock_deep_sleep(struct udc_hpm_data *priv)
+{
+	if (!priv->pm_deep_locked) {
+		return;
+	}
+
+	pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+	pm_policy_state_lock_put(PM_STATE_SOFT_OFF, PM_ALL_SUBSTATES);
+	priv->pm_deep_locked = false;
+}
 
 /* TODO: implement the cache maintenance
  * solution1: Use the non-cached buf to do memcpy before/after giving buffer to usb controller.
@@ -719,6 +750,9 @@ static int udc_hpm_enable(const struct device *dev)
 	usb_device_bus_reset(handle, USB_HPM_EP0_SIZE);
 	handle->regs->USBCMD |= USB_USBCMD_RS_MASK;
 	usb_device_connect(handle);
+#ifdef CONFIG_PM_DEVICE
+	pm_device_busy_set(dev);
+#endif
 
 	return 0;
 }
@@ -764,6 +798,11 @@ static int udc_hpm_init(const struct device *dev)
 
 	LOG_DBG("Initialized USB controller %x", (uint32_t)config->base);
 
+#ifdef CONFIG_PM_DEVICE
+	pm_device_busy_set(dev);
+#endif
+	udc_hpm_lock_deep_sleep(priv);
+
 	return 0;
 }
 
@@ -778,9 +817,59 @@ static int udc_hpm_shutdown(const struct device *dev)
 
 	/* De-init HPM USB device driver. */
 	usb_device_deinit(handle);
+#ifdef CONFIG_PM_DEVICE
+	pm_device_busy_clear(dev);
+#endif
+	udc_hpm_unlock_deep_sleep(priv);
 
 	return 0;
 }
+
+#ifdef CONFIG_PM_DEVICE
+static int udc_hpm_pm_action(const struct device *dev,
+			     enum pm_device_action action)
+{
+	const struct udc_hpm_config *config = dev->config;
+	struct udc_hpm_data *priv = udc_get_private(dev);
+
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+		if (priv->pm_suspended) {
+			return 0;
+		}
+
+		/*
+		 * Stop drops USB PHY and QTD/QH memory. Do not pretend the
+		 * live stack can resume: the application must udc_shutdown()
+		 * first. Returning -EBUSY aborts system-managed Stop.
+		 */
+		if (udc_is_enabled(dev) || udc_is_initialized(dev)) {
+			return -EBUSY;
+		}
+
+		clock_remove_from_group(config->clock_name, 0);
+		priv->pm_suspended = true;
+		return 0;
+
+	case PM_DEVICE_ACTION_RESUME:
+		if (!priv->pm_suspended) {
+			return 0;
+		}
+
+		clock_add_to_group(config->clock_name, 0);
+		if (pinctrl_apply_state(config->pincfg,
+					PINCTRL_STATE_DEFAULT) < 0) {
+			return -EIO;
+		}
+
+		priv->pm_suspended = false;
+		return 0;
+
+	default:
+		return -ENOTSUP;
+	}
+}
+#endif
 
 static int udc_hpm_lock(const struct device *dev)
 {
@@ -863,6 +952,8 @@ static int udc_hpm_driver_preinit(const struct device *dev)
 
 	pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
 
+	udc_hpm_lock_deep_sleep(priv);
+
 	return 0;
 }
 
@@ -928,12 +1019,14 @@ static const struct udc_api udc_hpm_api = {
 	static struct udc_hpm_data priv_data_##n = {					\
 	};										\
 											\
+	PM_DEVICE_DT_INST_DEFINE(n, udc_hpm_pm_action);					\
+											\
 	static struct udc_data udc_data_##n = {						\
 		.mutex = Z_MUTEX_INITIALIZER(udc_data_##n.mutex),			\
 		.priv = &priv_data_##n,							\
 	};										\
 											\
-	DEVICE_DT_INST_DEFINE(n, udc_hpm_driver_preinit, NULL,				\
+	DEVICE_DT_INST_DEFINE(n, udc_hpm_driver_preinit, PM_DEVICE_DT_INST_GET(n),	\
 						&udc_data_##n, &priv_config_##n,				\
 						POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEVICE,\
 						&udc_hpm_api);

@@ -289,6 +289,31 @@
 #define CONFIG_USB_EHCI_QH_NUM          10
 #define CONFIG_USB_EHCI_QTD_NUM         64
 
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+#undef CONFIG_USBHOST_MAX_EXTHUBS
+#define CONFIG_USBHOST_MAX_EXTHUBS          0
+#undef CONFIG_USBHOST_MAX_EHPORTS
+#define CONFIG_USBHOST_MAX_EHPORTS          1
+#undef CONFIG_USBHOST_MAX_INTERFACES
+#define CONFIG_USBHOST_MAX_INTERFACES       4
+#undef CONFIG_USBHOST_MAX_ENDPOINTS
+#define CONFIG_USBHOST_MAX_ENDPOINTS        4
+#undef CONFIG_USBHOST_MAX_CDC_ACM_CLASS
+#define CONFIG_USBHOST_MAX_CDC_ACM_CLASS    1
+#undef CONFIG_USBHOST_MAX_HID_CLASS
+#define CONFIG_USBHOST_MAX_HID_CLASS        1
+#undef CONFIG_USBHOST_MAX_MSC_CLASS
+#define CONFIG_USBHOST_MAX_MSC_CLASS        1
+#undef CONFIG_USB_EHCI_QH_NUM
+#define CONFIG_USB_EHCI_QH_NUM              6
+#undef CONFIG_USB_EHCI_QTD_NUM
+#define CONFIG_USB_EHCI_QTD_NUM             16
+#undef CONFIG_USBHOST_PSC_STACKSIZE
+#define CONFIG_USBHOST_PSC_STACKSIZE        1024
+#undef CONFIG_USBHOST_REQUEST_BUFFER_LEN
+#define CONFIG_USBHOST_REQUEST_BUFFER_LEN   256
+#endif
+
 /* ================ Addr Convert Configuration ==================*/
 #ifndef usb_phyaddr2ramaddr
 #define usb_phyaddr2ramaddr(addr) core_local_mem_to_sys_address(0, addr)

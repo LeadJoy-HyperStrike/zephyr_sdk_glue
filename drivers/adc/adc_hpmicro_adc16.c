@@ -17,6 +17,7 @@
 #include <hpm_trgm_drv.h>
 #endif
 #include <zephyr/drivers/pinctrl.h>
+#include <zephyr/sys/util.h>
 
 #define LOG_LEVEL CONFIG_ADC_LOG_LEVEL
 #include <zephyr/logging/log.h>
@@ -54,6 +55,47 @@ struct hpmicro_adc16_data {
 	uint8_t channel_num;
 	uint8_t resolution;
 };
+
+static int hpmicro_adc16_validate_sequence(const struct adc_sequence *sequence)
+{
+	uint32_t channels = sequence->channels;
+	uint32_t channel_count = POPCOUNT(channels);
+	size_t needed_buffer_size;
+
+	if ((channels == 0U) || (channel_count > ADC_SOC_SEQ_MAX_LEN)) {
+		LOG_ERR("Invalid channel set 0x%x", channels);
+		return -EINVAL;
+	}
+
+	while (channels != 0U) {
+		uint8_t channel_id = find_lsb_set(channels) - 1;
+
+		if (ADC16_IS_CHANNEL_INVALID(channel_id)) {
+			LOG_ERR("Invalid channel %u", channel_id);
+			return -EINVAL;
+		}
+		channels &= ~BIT(channel_id);
+	}
+
+	if ((sequence->resolution == 0U) || (sequence->resolution > 16U)) {
+		LOG_ERR("Unsupported resolution %u", sequence->resolution);
+		return -ENOTSUP;
+	}
+
+	needed_buffer_size = channel_count * sizeof(uint16_t);
+	if (sequence->options != NULL) {
+		needed_buffer_size *= 1U + sequence->options->extra_samplings;
+	}
+
+	if ((sequence->buffer == NULL) ||
+	    (sequence->buffer_size < needed_buffer_size)) {
+		LOG_ERR("Provided buffer is too small (%zu/%zu)",
+			sequence->buffer_size, needed_buffer_size);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
 
 #if DT_NODE_HAS_PROP(DT_NODELABEL(adc0), trig-base)
 static void hpmicro_init_trigger_mux(TRGM_Type * ptr, uint32_t hpm_trig_input_src, uint32_t trig_num)
@@ -105,6 +147,11 @@ static int hpmicro_adc16_start_read(const struct device *dev,
 {
 	struct hpmicro_adc16_data *data = dev->data;
 	int error;
+
+	error = hpmicro_adc16_validate_sequence(sequence);
+	if (error != 0) {
+		return error;
+	}
 
 	if (sequence->oversampling != 0) {
 		LOG_ERR("Unsupported oversampling");

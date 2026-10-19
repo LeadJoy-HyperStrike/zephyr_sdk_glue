@@ -5,6 +5,7 @@
  *
  */
 
+#include <string.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/init.h>
 #include <zephyr/logging/log.h>
@@ -62,6 +63,7 @@ static void soc_init_clock(void)
 	clock_add_to_group(clock_pwm1, 0);
 	clock_add_to_group(clock_pwm2, 0);
 	clock_add_to_group(clock_pwm3, 0);
+	clock_add_to_group(clock_ptmr, 0);
 
 	/* Connect Group0 to CPU0 */
 	clock_connect_group_to_cpu(0, 0);
@@ -72,16 +74,39 @@ static void soc_init_clock(void)
 #endif
 
 	/*
-	 * Keep BootROM default PLL preset for HPM5151:
-	 * - CLK_TOP_CPU0 default is 240MHz
-	 * - Functional clocks default to values from UM Table 18
+	 * PLL0 VCO stays 720MHz. CLK0 postdiv 1.8 → 400MHz.
+	 * CPU /1 = 400MHz, AHB /2 of CPU = 200MHz (BUS_FREQ_MAX).
 	 */
-	sysctl_config_cpu0_domain_clock(HPM_SYSCTL, clock_source_pll0_clk0, 2, 3);
+	pllctlv2_set_postdiv(HPM_PLLCTLV2, pllctlv2_pll0, pllctlv2_clk0,
+			     pllctlv2_div_1p8);
+	sysctl_config_cpu0_domain_clock(HPM_SYSCTL, clock_source_pll0_clk0, 1, 2);
 
 	clock_update_core_clock();
 
 	/* Configure mchtmr to 24MHz */
 	clock_set_source_divider(clock_mchtmr0, clk_src_osc24m, 1);
+}
+
+extern char __nocache_ram_start[];
+extern char __nocache_ram_end[];
+extern char __nocache_load_start[];
+extern char __kernel_ram_start[];
+extern char __kernel_ram_end[];
+
+static void soc_copy_nocache(void)
+{
+	size_t size = (size_t)(__nocache_ram_end - __nocache_ram_start);
+
+	if (size == 0U) {
+		return;
+	}
+
+	if ((&__nocache_ram_start[0] >= &__kernel_ram_start[0]) &&
+	    (&__nocache_ram_end[0] <= &__kernel_ram_end[0])) {
+		return;
+	}
+
+	memcpy(__nocache_ram_start, __nocache_load_start, size);
 }
 
 #ifdef CONFIG_NOCACHE_MEMORY
@@ -110,6 +135,7 @@ static int hpmicro_soc_init(void)
 
 	key = irq_lock();
 	soc_init_clock();
+	soc_copy_nocache();
 #ifdef CONFIG_NOCACHE_MEMORY
 	soc_init_pma();
 #endif

@@ -15,9 +15,14 @@ supported:
   - dma
   - spi
   - i2c
+  - pwm
   - usbd
   - adc
   - adc16
+  - can
+  - can_fd
+  - counter
+  - flash
 testing:
   ignore_tags:
     - bluetooth

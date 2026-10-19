@@ -17,7 +17,14 @@
 #include <soc.h>
 
 #include <hpm_gpio_drv.h>
+#include <hpm_gpiom_drv.h>
 LOG_MODULE_REGISTER(hpmicro_hpm_gpio, CONFIG_GPIO_LOG_LEVEL);
+
+/* Route pad to SoC GPIO0 so IE/IF and IRQn_GPIO0_x work (not FGPIO). */
+static void gpio_hpm_bind_soc_gpio0(uint32_t port, gpio_pin_t pin)
+{
+	gpiom_set_pin_controller(HPM_GPIOM, (uint8_t)port, pin, gpiom_soc_gpio0);
+}
 struct gpio_hpm_config {
 	struct gpio_driver_config common;
 	GPIO_Type *gpio_base;
@@ -71,9 +78,11 @@ static int gpio_hpm_configure(const struct device *dev,
 	switch (flags & GPIO_DIR_MASK) {
 	case GPIO_DISCONNECTED:
 	case GPIO_INPUT:
+		gpio_hpm_bind_soc_gpio0(port_base, pin);
 		gpio_set_pin_input(gpio_base, port_base, pin);
 		break;
 	case GPIO_OUTPUT:
+		gpio_hpm_bind_soc_gpio0(port_base, pin);
 		gpio_set_pin_output(gpio_base, port_base, pin);
 		if ((flags & GPIO_OUTPUT_INIT_HIGH) != 0) {
 			gpio_write_pin(gpio_base, port_base, pin, 1);
@@ -169,6 +178,7 @@ static int gpio_hpm_pin_interrupt_configure(const struct device *dev,
 			trigger = gpio_interrupt_trigger_level_high;
 			break;
 		case GPIO_INT_TRIG_BOTH:
+			/* Level BOTH is not in HPM GPIO IP. */
 			return -ENOTSUP;
 		default:
 			return -ENOTSUP;
@@ -182,7 +192,13 @@ static int gpio_hpm_pin_interrupt_configure(const struct device *dev,
 			trigger = gpio_interrupt_trigger_edge_rising;
 			break;
 		case GPIO_INT_TRIG_BOTH:
+#if defined(GPIO_SOC_HAS_EDGE_BOTH_INTERRUPT) && \
+	(GPIO_SOC_HAS_EDGE_BOTH_INTERRUPT == 1)
+			trigger = gpio_interrupt_trigger_edge_both;
+			break;
+#else
 			return -ENOTSUP;
+#endif
 		default:
 			return -ENOTSUP;
 		}
@@ -191,11 +207,11 @@ static int gpio_hpm_pin_interrupt_configure(const struct device *dev,
 	if (mode == GPIO_INT_MODE_DISABLED) {
 		gpio_disable_pin_interrupt(gpio_base, port_base, pin);
 	} else {
+		gpio_hpm_bind_soc_gpio0(port_base, pin);
 		gpio_config_pin_interrupt(gpio_base, port_base,
 						   pin, trigger);
 		gpio_enable_pin_interrupt(gpio_base, port_base,
 							pin);
-		// intc_m_enable_irq_with_priority(IRQn_GPIO0_Z, 1);
 	}
 	return 0;
 }

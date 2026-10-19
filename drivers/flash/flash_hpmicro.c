@@ -98,26 +98,42 @@ static int flash_hpmicro_erase(const struct device *dev, off_t offset,
                  size_t size)
 {
 	struct flash_hpmicro_dev_data *const dev_data = dev->data;
-    hpm_stat_t status = 0;
+	hpm_stat_t status = status_success;
 	unsigned int key;
-    if (!initted) {
-        initted = true;
-        flash_hpmicro_init(dev);
-    }
-    if (size < 4) {
-        while (1) {
-        }
-    }
-    key = irq_lock();
-    for (int i = 0; i < size; i += (s_xpi_nor_config.device_info.sector_size_kbytes * 1024)) {
-        status = rom_xpi_nor_erase_sector(dev_data->controller, xpi_xfer_channel_auto, &s_xpi_nor_config,
-                                   offset + i);
-        if (status != status_success) {
-            break;
-        }
-    }
-    irq_unlock(key);
-    return HPM_STATUS_ZEPHYR_RET(status);
+	uint32_t sec_sz;
+	off_t addr;
+	off_t end;
+
+	if (!initted) {
+		initted = true;
+		flash_hpmicro_init(dev);
+	}
+	if (size == 0) {
+		return 0;
+	}
+
+	sec_sz = sector_size ? sector_size : FLASH_ERASE_BLK_SZ;
+	if (sec_sz == 0) {
+		return -EINVAL;
+	}
+
+	/* Align range to erase sectors (img_mgmt / flash_area_flatten callers). */
+	end = offset + (off_t)size;
+	addr = offset - (offset % (off_t)sec_sz);
+
+	while (addr < end) {
+		key = irq_lock();
+		status = rom_xpi_nor_erase_sector(dev_data->controller, xpi_xfer_channel_auto,
+						  &s_xpi_nor_config, (uint32_t)addr);
+		irq_unlock(key);
+		if (status != status_success) {
+			LOG_ERR("erase sector @0x%lx failed: %u", (long)addr, status);
+			return -EIO;
+		}
+		addr += (off_t)sec_sz;
+	}
+
+	return 0;
 }
 
 #if CONFIG_FLASH_PAGE_LAYOUT

@@ -8,14 +8,36 @@ config SPI_HPMICRO
 	depends on DT_HAS_HPMICRO_HPM_SPI_ENABLED
 	select HAS_HPMSDK_SPI
 	select SPI
+	select SPI_SLAVE
 	help
-	  Enable support for hpmicro spi driver.
+	  Enable support for hpmicro spi driver (master and slave).
 
 if SPI_HPMICRO
+
+config SPI_HPM_INTERRUPT
+	bool "HPM SPI interrupt-driven transfers"
+	default n
+	help
+	  Use SPI TX/RX FIFO threshold and transfer-end interrupts
+	  instead of polling spi_transfer(). Keep SCLK modest (e.g.
+	  <= 1 MHz) so the ISR can keep up with the FIFO.
+
+config SPI_HPM_SLAVE_FRAMED
+	bool "HPM SPI slave cmd/addr frame (SDK-compatible)"
+	depends on SPI_SLAVE
+	default n
+	help
+	  Slave uses non-data-only mode with command + address phases,
+	  matching HPM SDK interrupt/DMA master samples (cmd=0x1a,
+	  addr=0x10, read-dummy-write). Without this, slave is raw
+	  data-only (Zephyr default).
+
 config SPI_HPM_SPI_DMA
 	bool "HPM SPI DMA Support"
 	select DMA
 	help
 	  Enable the SPI DMA mode for SPI instances
 	  that enable dma channels in their device tree node.
-endif # SPI_HPM
+	  With CONFIG_SPI_ASYNC, DMA chunks chain in the DMA callback.
+
+endif # SPI_HPMICRO

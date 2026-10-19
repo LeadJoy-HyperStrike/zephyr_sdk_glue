@@ -24,12 +24,40 @@
 			riscv,isa = "rv32gc_xandes";
 			i-cache-line-size = <64>;
 			d-cache-line-size = <64>;
+			cpu-power-states = <&wait &stop &soft_off>;
 
 			cpu0_intc: interrupt-controller {
 				compatible = "riscv,cpu-intc";
 				#address-cells = <0>;
 				#interrupt-cells = <1>;
 				interrupt-controller;
+			};
+		};
+
+		power-states {
+			wait: wait {
+				compatible = "zephyr,power-state";
+				power-state-name = "runtime-idle";
+				substate-id = <1>;
+				min-residency-us = <10>;
+				exit-latency-us = <10>;
+			};
+
+			stop: stop {
+				compatible = "zephyr,power-state";
+				power-state-name = "suspend-to-idle";
+				substate-id = <1>;
+				min-residency-us = <100>;
+				exit-latency-us = <100>;
+			};
+
+			soft_off: soft_off {
+				compatible = "zephyr,power-state";
+				power-state-name = "soft-off";
+				substate-id = <1>;
+				min-residency-us = <1000>;
+				exit-latency-us = <1000>;
+				zephyr,pm-device-disabled;
 			};
 		};
 	};
@@ -54,7 +82,8 @@
 			clk0 {
 				src-name = <CLK_SRC_PLL0_CLK0>;
 				div-i = <0>;
-				div-p = <0>;
+				/* 720 MHz / 1.8 = 400 MHz */
+				div-p = <4>;
 			};
 
 			clk1 {
@@ -136,6 +165,44 @@
 			interrupts-extended = <&cpu0_intc 7>;
 		};
 
+		/*
+		 * GPTMRv2: GPTMR0 @ 0xF0000000 IRQn 6, GPTMR1 @ 0xF0004000 IRQn 7.
+		 * Prefer GPTMR0 for app counters (PLIC 7 is fine; mtimer uses cpu intc 7).
+		 */
+		gptmr0: timer@f0000000 {
+			compatible = "hpmicro,hpm-gptmr";
+			reg = <0xf0000000 DT_SIZE_K(16)>;
+			interrupts = <6 1>;
+			interrupt-parent = <&plic>;
+			clk-name = <CLOCK_GPTMR0>;
+			channel = <0>;
+			status = "disabled";
+		};
+
+		gptmr1: timer@f0004000 {
+			compatible = "hpmicro,hpm-gptmr";
+			reg = <0xf0004000 DT_SIZE_K(16)>;
+			interrupts = <7 1>;
+			interrupt-parent = <&plic>;
+			clk-name = <CLOCK_GPTMR1>;
+			channel = <0>;
+			status = "disabled";
+		};
+
+		/*
+		 * PMIC-domain GPTMRv2. PTMR keeps running in Stop and is the
+		 * low-power timer selected by the HPM5151 SDK RTOS ports.
+		 */
+		ptmr: timer@f4120000 {
+			compatible = "hpmicro,hpm-gptmr";
+			reg = <0xf4120000 DT_SIZE_K(16)>;
+			interrupts = <50 1>;
+			interrupt-parent = <&plic>;
+			clk-name = <CLOCK_PTMR>;
+			channel = <1>;
+			status = "disabled";
+		};
+
 		xpi0: xpi@f00e0000 {
 			compatible = "hpmicro,xpi";
 			reg = <0xf00e0000 DT_SIZE_K(16)>;
@@ -150,12 +217,22 @@
 			ranges = <0x0 0xf00d0000 DT_SIZE_K(16)>;
 		};
 
+		/*
+		 * Functional clocks (HPM5100 UM Table 18):
+		 * URT/I2C/SPI/CAN: mux=3 (PLL1CLK0@400MHz), reg DIV=4 →
+		 * clock_set_source_divider() uses actual divisor = reg+1 = 5
+		 * → 80MHz.
+		 */
+		/*
+		 * HPM5151 has on-chip UART RX-line idle; Async idle uses the
+		 * UART IRQ only (no GPTMR "idletimer" second interrupt).
+		 */
 		uart0: serial@f0040000 {
 			compatible = "hpmicro,hpm-uart";
 			reg = <0xf0040000 DT_SIZE_K(16)>;
-			interrupts = <8 1>, <7 1>;
-			interrupt-names = "uart", "idletimer";
-			clocks = <&clk CLOCK_UART0 CLK_SRC_OSC24M 1>;
+			interrupts = <8 1>;
+			interrupt-names = "uart";
+			clocks = <&clk CLOCK_UART0 CLK_SRC_PLL1_CLK0 5>;
 			interrupt-parent = <&plic>;
 			status = "disabled";
 		};
@@ -163,9 +240,43 @@
 		uart1: serial@f0044000 {
 			compatible = "hpmicro,hpm-uart";
 			reg = <0xf0044000 DT_SIZE_K(16)>;
-			interrupts = <9 1>, <7 1>;
-			interrupt-names = "uart", "idletimer";
-			clocks = <&clk CLOCK_UART1 CLK_SRC_OSC24M 1>;
+			interrupts = <9 1>;
+			interrupt-names = "uart";
+			clocks = <&clk CLOCK_UART1 CLK_SRC_PLL1_CLK0 5>;
+			interrupt-parent = <&plic>;
+			status = "disabled";
+		};
+
+		uart2: serial@f0048000 {
+			compatible = "hpmicro,hpm-uart";
+			reg = <0xf0048000 DT_SIZE_K(16)>;
+			interrupts = <10 1>;
+			interrupt-names = "uart";
+			clocks = <&clk CLOCK_UART2 CLK_SRC_PLL1_CLK0 5>;
+			interrupt-parent = <&plic>;
+			status = "disabled";
+		};
+
+		uart3: serial@f004c000 {
+			compatible = "hpmicro,hpm-uart";
+			reg = <0xf004c000 DT_SIZE_K(16)>;
+			interrupts = <11 1>;
+			interrupt-names = "uart";
+			clocks = <&clk CLOCK_UART3 CLK_SRC_PLL1_CLK0 5>;
+			interrupt-parent = <&plic>;
+			status = "disabled";
+		};
+
+		/*
+		 * PMIC-domain UART. Unlike UART0-3, PUART remains available as a
+		 * serial wake source while the SoC is in Stop mode.
+		 */
+		puart: serial@f4124000 {
+			compatible = "hpmicro,hpm-uart";
+			reg = <0xf4124000 DT_SIZE_K(16)>;
+			interrupts = <51 1>;
+			interrupt-names = "uart";
+			clocks = <&clk CLOCK_PUART CLK_PWDG_SRC_OSC24M 1>;
 			interrupt-parent = <&plic>;
 			status = "disabled";
 		};
@@ -174,7 +285,7 @@
 			compatible = "hpmicro,hpm-i2c";
 			#address-cells = <1>;
 			#size-cells = <0>;
-			clocks = <&clk CLOCK_I2C0 CLK_SRC_OSC24M 1>;
+			clocks = <&clk CLOCK_I2C0 CLK_SRC_PLL1_CLK0 5>;
 			clock-frequency = <100000>;
 			reg = <0xf0060000 DT_SIZE_K(16)>;
 			interrupts = <12 1>;
@@ -186,7 +297,7 @@
 			compatible = "hpmicro,hpm-i2c";
 			#address-cells = <1>;
 			#size-cells = <0>;
-			clocks = <&clk CLOCK_I2C1 CLK_SRC_OSC24M 1>;
+			clocks = <&clk CLOCK_I2C1 CLK_SRC_PLL1_CLK0 5>;
 			clock-frequency = <100000>;
 			reg = <0xf0064000 DT_SIZE_K(16)>;
 			interrupts = <13 1>;
@@ -198,7 +309,7 @@
 			compatible = "hpmicro,hpm-i2c";
 			#address-cells = <1>;
 			#size-cells = <0>;
-			clocks = <&clk CLOCK_I2C2 CLK_SRC_OSC24M 1>;
+			clocks = <&clk CLOCK_I2C2 CLK_SRC_PLL1_CLK0 5>;
 			clock-frequency = <100000>;
 			reg = <0xf0068000 DT_SIZE_K(16)>;
 			interrupts = <14 1>;
@@ -209,7 +320,8 @@
 		spi0: spi@f0070000 {
 			compatible = "hpmicro,hpm-spi";
 			reg = <0xf0070000 DT_SIZE_K(16)>;
-			clocks = <&clk CLOCK_SPI0 CLK_SRC_OSC24M 1>;
+			/* SDK / UM Table 18: PLL1CLK0, reg DIV=4 → API div=5 = 80MHz. */
+			clocks = <&clk CLOCK_SPI0 CLK_SRC_PLL1_CLK0 5>;
 			interrupts = <15 1>;
 			interrupt-parent = <&plic>;
 			status = "disabled";
@@ -222,7 +334,7 @@
 		spi1: spi@f0074000 {
 			compatible = "hpmicro,hpm-spi";
 			reg = <0xf0074000 DT_SIZE_K(16)>;
-			clocks = <&clk CLOCK_SPI1 CLK_SRC_OSC24M 1>;
+			clocks = <&clk CLOCK_SPI1 CLK_SRC_PLL1_CLK0 5>;
 			interrupts = <16 1>;
 			interrupt-parent = <&plic>;
 			status = "disabled";
@@ -235,7 +347,7 @@
 		spi2: spi@f0078000 {
 			compatible = "hpmicro,hpm-spi";
 			reg = <0xf0078000 DT_SIZE_K(16)>;
-			clocks = <&clk CLOCK_SPI2 CLK_SRC_OSC24M 1>;
+			clocks = <&clk CLOCK_SPI2 CLK_SRC_PLL1_CLK0 5>;
 			interrupts = <17 1>;
 			interrupt-parent = <&plic>;
 			status = "disabled";
@@ -248,7 +360,8 @@
 		spi3: spi@f007c000 {
 			compatible = "hpmicro,hpm-spi";
 			reg = <0xf007c000 DT_SIZE_K(16)>;
-			clocks = <&clk CLOCK_SPI3 CLK_SRC_OSC24M 1>;
+			/* UM Table 18 / SDK: PLL1_CLK0 API div=5 = 80MHz. OSC24M is too slow for Mode3 framed slave. */
+			clocks = <&clk CLOCK_SPI3 CLK_SRC_PLL1_CLK0 5>;
 			interrupts = <18 1>;
 			interrupt-parent = <&plic>;
 			status = "disabled";
@@ -284,6 +397,24 @@
 			status = "disabled";
 		};
 
+		/*
+		 * MCAN0 @ 0xF0300000, IRQn 35.
+		 * Clock: PLL1_CLK0/5 (same as SDK init_can0_clock).
+		 * Message RAM must live in AHB SRAM (HRAM); board uses
+		 * zephyr,sram=&hram so BSS buffers are already valid.
+		 */
+		mcan0: can@f0300000 {
+			compatible = "hpmicro,hpm-mcan";
+			reg = <0xf0300000 DT_SIZE_K(16)>;
+			interrupts = <35 1>;
+			interrupt-parent = <&plic>;
+			clk-name = <CLOCK_CAN0>;
+			clk-source = <CLK_SRC_PLL1_CLK0>;
+			clk-divider = <5>;
+			bus-speed = <500000>;
+			status = "disabled";
+		};
+
 		pinctrl: pin-controller@f4040000 {
 			compatible = "hpmicro,hpm-pinctrl";
 			reg = <0xf4040000 0x4000>;
@@ -296,14 +427,35 @@
 			status = "okay";
 		};
 
-		hdma: hdma@f00c8000 {
+		/*
+		 * UM: two AHB DMA engines + shared DMAMUX.
+		 * HDMA0 @ 0xF00C8000 IRQ24; HDMA1 @ 0xF00E4000 IRQ47;
+		 * DMAMUX @ 0xF00C4000 (HDMA0_MUX0..31 then HDMA1_MUX0..31).
+		 * Each engine has 32 HW channels (DMA_SOC_CHANNEL_NUM); DT
+		 * exposes 8 for bring-up channel budgeting.
+		 */
+		hdma: hdma0: hdma@f00c8000 {
 			#dma-cells = <2>;
 			compatible = "hpmicro,hpm-dmav2";
 			dma-channels = <8>;
 			dma-requests = <116>;
 			reg = <0xf00c8000 0x4000>,
 				<0xf00c4000 0x4000>;
-			interrupts = <34 1>;
+			clk-name = <CLOCK_HDMA0>;
+			interrupts = <24 1>;
+			interrupt-parent = <&plic>;
+			status = "disabled";
+		};
+
+		hdma1: hdma@f00e4000 {
+			#dma-cells = <2>;
+			compatible = "hpmicro,hpm-dmav2";
+			dma-channels = <8>;
+			dma-requests = <116>;
+			reg = <0xf00e4000 0x4000>,
+				<0xf00c4000 0x4000>;
+			clk-name = <CLOCK_HDMA1>;
+			interrupts = <47 1>;
 			interrupt-parent = <&plic>;
 			status = "disabled";
 		};
@@ -366,6 +518,39 @@
 			sample-time = <20>;
 			status = "disabled";
 			#io-channel-cells = <1>;
+		};
+
+		/* PWM v1 (hpm_pwm_drv): HPM_PWMn @ 0xF042x000, IRQn_PWMn = 37..40 */
+		pwm0: pwm@f0420000 {
+			compatible = "hpmicro,hpm-pwm";
+			reg = <0xf0420000 DT_SIZE_K(16)>;
+			clocks = <&clk CLOCK_PWM0 CLOCK_AHB 1>;
+			status = "disabled";
+			#pwm-cells = <3>;
+		};
+
+		pwm1: pwm@f0424000 {
+			compatible = "hpmicro,hpm-pwm";
+			reg = <0xf0424000 DT_SIZE_K(16)>;
+			clocks = <&clk CLOCK_PWM1 CLOCK_AHB 1>;
+			status = "disabled";
+			#pwm-cells = <3>;
+		};
+
+		pwm2: pwm@f0428000 {
+			compatible = "hpmicro,hpm-pwm";
+			reg = <0xf0428000 DT_SIZE_K(16)>;
+			clocks = <&clk CLOCK_PWM2 CLOCK_AHB 1>;
+			status = "disabled";
+			#pwm-cells = <3>;
+		};
+
+		pwm3: pwm@f042c000 {
+			compatible = "hpmicro,hpm-pwm";
+			reg = <0xf042c000 DT_SIZE_K(16)>;
+			clocks = <&clk CLOCK_PWM3 CLOCK_AHB 1>;
+			status = "disabled";
+			#pwm-cells = <3>;
 		};
 	};
 };

@@ -1,0 +1,185 @@
+/*
+ * xT3U 当前已占用/保留的 I/O（HPM5100EVK，供后续分配引脚时查询）：
+ *
+ * 0. 启动 Flash 与调试下载
+ *    - PA09：SPI0_DAT3；PA10：SPI0_SCLK；PA12：SPI0_DAT1；
+ *      PA13：SPI0_DAT0；PA14：SPI0_DAT2；PA11：外部 NOR Flash 片选。
+ *      这些脚由启动 Flash/XPI0 使用，不能复用。
+ *    - D_TRST、D_TMS、D_TCK、D_TDO、D_TDI 为板载调试器使用的 JTAG 网络，
+ *      不应分配给应用。
+ *
+ * 1. USB0（CherryUSB 设备控制器）
+ *    - PB20：USB_DM，专用 USB PHY 焊盘。
+ *    - PB21：USB_DP，专用 USB PHY 焊盘。
+ *    - PB13：USB0_ID；PB14：USB0_PWR；PB15：USB0_OC。
+ *      上述 3 个 USB 辅助控制脚由板级 pinctrl 配置，不应另作 GPIO。
+ *
+ * 2. 调试与板载基础功能
+ *    - PA00：UART0_TXD；PA01：UART0_RXD，连接板载调试器，供 Zephyr
+ *      console/printk 使用。
+ *    - PA30：UART3_RXD；PA31：UART3_TXD，从 J7[9]/J7[10] 引出，
+ *      作为 APP 主通信链路。
+ *    - PY06：UART2_RXD；PY07：UART2_TXD，NS通信链路。PY07与WKUP
+ *      按键侧电容相连，高波特率使用前需要确认波形。
+ *    - PA15：板载用户按键 sw0（低有效）；短按用于手柄全键值上报，长按
+ *      切换 USB 模式。
+ *    - PA18：板载红色 LED（低有效）。
+ *
+ * 3. USB 音频（ES8389）
+ *    - PA22：I2C2_SDA；PA23：I2C2_SCL，ES8389 寄存器控制总线。
+ *    - PB04：I2S0_MCLK；PB09：I2S0_BCLK；PB10：I2S0_FCLK/LRCK。
+ *    - PB00：I2S0_TXD_0，送往 ES8389 DSDIN；PB08：I2S0_RXD_3，
+ *      来自 ES8389 ASDOUT。
+ *
+ * 4. USB SOF 时序测量
+ *    - PC13：GPTMR0_CH1 比较输出，标记 USB SOF 处理入口。
+ *    - PC11：GPIOC11/FGPIO 输出；GPTMR0_CH3 在 SOF 后 60 us 到期并进入
+ *      已注册回调时，由回调的首个 GPIO 操作拉高该脚，用于记录回调实际进入
+ *      的时间。PC11 不再输出 GPTMR0_CH3 的硬件比较器波形。
+ *
+ * 5. 四路摇杆 ADC 与校准
+ *    - PC05：ADC0_IN02，左摇杆 X；PA24：ADC1_IN12，左摇杆 Y。
+ *    - PB12：ADC2_IN09，右摇杆 X；PB11：ADC3_IN11，右摇杆 Y。
+ *    - PC07：GPIOC07，临时摇杆校准按键，P1[15]，内部上拉、低电平有效。
+ *
+ * 6. 板级 DTS 已启用但 xT3U 当前没有业务使用的资源
+ *    - PY03：I2C1_SCL；PY02：I2C1_SDA。
+ *    - PC06：SPI3_CS；PC10：SPI3_SCLK；PC13：SPI3_MOSI；PC15：SPI3_MISO。
+ *      其中 PC13 会在 xT3U 运行期改配为上面的 SOF 测量输出，不能使用 SPI3。
+ *      若计划复用以上资源，须同时调整板级 DTS/pinctrl 和运行时代码，
+ *      不能只修改此 overlay。
+ *
+ * 本 test_io overlay 只启用按键 GPIO。产品 overlay 里下列项与当前
+ * sdk_glue 板级冲突，未启用：
+ *   - 再定义 uart3@f004c000：SoC DTS 已有该节点。
+ *   - 改 usb0 compatible 为 cherryusb / 关 HDMA / 改 sram=dlm：
+ *     会动到 console、链接和 USB 栈，不属于本例程。
+ *   - gpioa pinctrl-0 挂两个 phandle：HPM pinctrl 只走第一个
+ *     phandle 的 group，PA25–27 不会生效；改为给 &pinmux_gpioa 加 group。
+ *   - Port C 必须 keeper-capability-disable，否则空闲 DI 常为 0。
+ */
+
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/hpmicro-pinctrl-common.h>
+
+/* USER KEY PA15 / LED PA18 仍在板级 pinmux_gpioa；这里追加 dpad。 */
+&pinmux_gpioa {
+	group_xt3u {
+		pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 25),
+					 IOC_TYPE_IOC, 0, 0)>,
+			 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 26),
+					 IOC_TYPE_IOC, 0, 0)>,
+			 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 27),
+					 IOC_TYPE_IOC, 0, 0)>;
+		input-enable;
+		input-schmitt-enable;
+		bias-pull-up;
+	};
+};
+
+&pinctrl {
+	pinmux_xt3u_button_gpiob: pinmux_xt3u_button_gpiob {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTB, 1),
+						 IOC_TYPE_IOC, 0, 0)>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up;
+		};
+	};
+
+	pinmux_xt3u_button_gpioc: pinmux_xt3u_button_gpioc {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 1),
+						 IOC_TYPE_IOC, 0, 0)>,
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 2),
+						 IOC_TYPE_IOC, 0, 0)>,
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 3),
+						 IOC_TYPE_IOC, 0, 0)>,
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 4),
+						 IOC_TYPE_IOC, 0, 0)>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up;
+			keeper-capability-disable;
+		};
+	};
+};
+
+&gpiob {
+	status = "okay";
+	pinctrl-0 = <&pinmux_xt3u_button_gpiob>;
+	pinctrl-names = "default";
+};
+
+&gpioc {
+	status = "okay";
+	pinctrl-0 = <&pinmux_xt3u_button_gpioc>;
+	pinctrl-names = "default";
+};
+
+/ {
+	xt3u_buttons: xt3u_buttons {
+		compatible = "gpio-keys";
+
+		xt3u_button_up: up {
+			gpios = <&gpiob 1 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_UP>;
+			label = "xT3U D-pad Up";
+		};
+
+		xt3u_button_down: down {
+			gpios = <&gpioa 25 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_DOWN>;
+			label = "xT3U D-pad Down";
+		};
+
+		xt3u_button_left: left {
+			gpios = <&gpioa 26 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_LEFT>;
+			label = "xT3U D-pad Left";
+		};
+
+		xt3u_button_right: right {
+			gpios = <&gpioa 27 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_RIGHT>;
+			label = "xT3U D-pad Right";
+		};
+
+		xt3u_button_a: button_a {
+			gpios = <&gpioc 1 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_A>;
+			label = "xT3U A";
+		};
+
+		xt3u_button_b: button_b {
+			gpios = <&gpioc 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_B>;
+			label = "xT3U B";
+		};
+
+		xt3u_button_x: button_x {
+			gpios = <&gpioc 3 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_X>;
+			label = "xT3U X";
+		};
+
+		xt3u_button_y: button_y {
+			gpios = <&gpioc 4 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_Y>;
+			label = "xT3U Y";
+		};
+	};
+
+	aliases {
+		xt3u-button-up = &xt3u_button_up;
+		xt3u-button-down = &xt3u_button_down;
+		xt3u-button-left = &xt3u_button_left;
+		xt3u-button-right = &xt3u_button_right;
+		xt3u-button-a = &xt3u_button_a;
+		xt3u-button-b = &xt3u_button_b;
+		xt3u-button-x = &xt3u_button_x;
+		xt3u-button-y = &xt3u_button_y;
+	};
+};

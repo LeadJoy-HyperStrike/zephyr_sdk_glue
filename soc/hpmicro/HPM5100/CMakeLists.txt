@@ -5,6 +5,7 @@ zephyr_include_directories(.)
 zephyr_sources(
   start.S
   soc.c
+  power.c
 )
 
 if(CONFIG_SOC_ANDES_V5_HWDSP)

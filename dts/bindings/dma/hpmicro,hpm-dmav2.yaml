@@ -14,6 +14,11 @@ properties:
     interrupts:
       required: true
 
+    clk-name:
+      type: int
+      required: true
+      description: HPM SDK clock_name_t value for this DMA instance
+
     dma-channels:
       required: true
 

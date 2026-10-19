@@ -1,0 +1,14 @@
+/*
+ * Software CS on PC06 (SDK init_spi3_pins_with_gpio_as_cs).
+ * Use with polling or DMA; keep HW CS as board default without this overlay.
+ */
+
+&gpioc {
+	status = "okay";
+};
+
+&spi3 {
+	pinctrl-0 = <&pinmux_spi3_gpio_cs>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpioc 6 GPIO_ACTIVE_LOW>;
+};

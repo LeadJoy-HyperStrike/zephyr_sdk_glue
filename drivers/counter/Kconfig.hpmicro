@@ -1,0 +1,13 @@
+# Copyright (c) 2026 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+DT_COMPAT_HPM_GPTMR := hpmicro,hpm-gptmr
+
+config COUNTER_HPM_GPTMR
+	bool "HPMicro GPTMR counter driver"
+	default y
+	depends on COUNTER
+	depends on DT_HAS_HPMICRO_HPM_GPTMR_ENABLED
+	select HAS_HPMSDK_GPTMRV2
+	help
+	  Enable HPMicro GPTMRv2 as a Zephyr counter (reload / top IRQ).

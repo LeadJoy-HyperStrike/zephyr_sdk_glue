@@ -34,7 +34,16 @@ static volatile bool has_sent_out;
 #define HPM_MCAN_NUM_RX_BUF_ELEMENTS (16U)
 
 #if defined(MCAN_SOC_MSG_BUF_IN_AHB_RAM) && (MCAN_SOC_MSG_BUF_IN_AHB_RAM == 1)
+/*
+ * Message RAM must be in AHB SRAM. HPM5100EVK uses zephyr,sram=&hram
+ * (0xF0200000), so a normal BSS buffer is already in the valid range.
+ * (CONFIG_NOCACHE_MEMORY/PMA is not wired for HPM5151 yet.)
+ */
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+static uint32_t board_app_mcan_msg_buf[MCAN_MSG_BUF_SIZE_IN_WORDS] __aligned(4);
+#else
 ATTR_PLACE_AT("AHB_SRAM") uint32_t board_app_mcan_msg_buf[MCAN_MSG_BUF_SIZE_IN_WORDS];
+#endif
 static mcan_msg_buf_attr_t s_can_info[] = {
     {
         .ram_base = (uint32_t) &board_app_mcan_msg_buf,
@@ -119,10 +128,15 @@ static uint32_t hpm_mcan_get_first_filter_index(const mcan_rx_message_t *buf,
     uint32_t ext_filter_count = data->ext_filter_count;
     uint32_t std_filter_count = data->std_filter_count;
 
+    /*
+     * Classic MCAN filter: (rx_id & mask) == (filter_id & mask).
+     * mask bit=1 means "must match" (same as Zephyr can_filter.mask).
+     */
     if (buf->use_ext_id) {
         for (uint32_t i = 0; i < ext_filter_count; i++) {
             const mcan_filter_elem_t *filter = &data->ext_filters[i];
-            if ((buf->ext_id | filter->filter_mask) == (filter->filter_id | filter->filter_mask)) {
+            if ((buf->ext_id & filter->filter_mask) ==
+                (filter->filter_id & filter->filter_mask)) {
                 filter_index = i;
                 break;
             }
@@ -130,7 +144,8 @@ static uint32_t hpm_mcan_get_first_filter_index(const mcan_rx_message_t *buf,
     } else {
         for (uint32_t i = 0; i < std_filter_count; i++) {
             const mcan_filter_elem_t *filter = &data->std_filters[i];
-            if ((buf->std_id | filter->filter_mask) == (filter->filter_id | filter->filter_mask)) {
+            if ((buf->std_id & filter->filter_mask) ==
+                (filter->filter_id & filter->filter_mask)) {
                 filter_index = i;
                 break;
             }
@@ -323,7 +338,7 @@ static int hpm_mcan_init(const struct device *dev)
     k_sem_init(&data->tx_sem, HPM_MCAN_NUM_TX_BUF_ELEMENTS, HPM_MCAN_NUM_TX_BUF_ELEMENTS);
 
     for (uint32_t i= 0; i < ARRAY_SIZE(data->tx_fin_sem); i++) {
-        k_sem_init(&data->tx_fin_sem[i], 1, 1);
+        k_sem_init(&data->tx_fin_sem[i], 0, 1);
     }
 
     data->filter_rtr = 0;
@@ -378,10 +393,8 @@ static int hpm_mcan_init(const struct device *dev)
 
 static int hpm_mcan_set_mode(const struct device *dev, can_mode_t mode)
 {
-    const struct hpm_mcan_config *cfg = dev->config;
     struct hpm_mcan_data *data = dev->data;
     mcan_config_t *config = &data->config;
-    MCAN_Type *mcan = cfg->base;
     struct can_driver_data *common = &data->common;
 
     if (data->started) {
@@ -395,22 +408,24 @@ static int hpm_mcan_set_mode(const struct device *dev, can_mode_t mode)
     }
 #endif /* CONFIG_CAN_FD_MODE */
 
+    /*
+     * Only update software config here. Hardware CCCR/TEST bits are
+     * applied by mcan_init() in can_start() — poking registers while
+     * not in INIT can leave the controller wedged.
+     */
     if ((mode & CAN_MODE_LOOPBACK) != 0) {
         config->mode = mcan_mode_loopback_internal;
-        mcan->CCCR |= MCAN_CCCR_MON_MASK | MCAN_CCCR_TEST_MASK;
-        mcan->TEST |= MCAN_TEST_LBCK_MASK;
-    }
-    else if ((mode & CAN_MODE_LISTENONLY) != 0) {
+    } else if ((mode & CAN_MODE_LISTENONLY) != 0) {
         config->mode = mcan_mode_listen_only;
-        mcan->CCCR |= MCAN_CCCR_MON_MASK;
     } else {
         config->mode = mcan_mode_normal;
-        mcan->CCCR &= ~(MCAN_CCCR_MON_MASK | MCAN_CCCR_TEST_MASK);
     }
 
 #ifdef CONFIG_CAN_FD_MODE
-    if ((mode & CAN_MODE_FD)!=0) {
+    if ((mode & CAN_MODE_FD) != 0) {
         config->enable_canfd = 1;
+    } else {
+        config->enable_canfd = 0;
     }
 #endif /* CONFIG_CAN_FD_MODE */
 
@@ -530,10 +545,6 @@ static int hpm_mcan_send(const struct device *dev,
 		return -ENETDOWN;
 	}
 
-    while (!has_sent_out) {
-
-    }
-
     has_sent_out = false;
 
     (void) hpm_mcan_get_state(dev, &state, NULL);
@@ -551,7 +562,7 @@ static int hpm_mcan_send(const struct device *dev,
     memset(&tx_buf, 0, sizeof(tx_buf));
     convert_can_frame_to_mcan_frame(frame, &tx_buf);
 
-    k_mutex_lock(&data->tx_mutex, timeout);
+    k_mutex_lock(&data->tx_mutex, K_FOREVER);
 
     data->tx_fin_cb[0] = callback;
     data->tx_fin_cb_arg[0] = user_data;
@@ -560,14 +571,20 @@ static int hpm_mcan_send(const struct device *dev,
 
     k_mutex_unlock(&data->tx_mutex);
     if (status != 0) {
+        k_sem_give(&data->tx_sem);
+        has_sent_out = true;
         return -EIO;
     }
 
     if (callback == NULL) {
         LOG_DBG("Waiting for TX complete");
-        k_sem_take(&data->tx_fin_sem[0], K_FOREVER);
+        ret = k_sem_take(&data->tx_fin_sem[0], timeout);
+        if (ret != 0) {
+            k_sem_give(&data->tx_sem);
+            has_sent_out = true;
+            return -EAGAIN;
+        }
     }
-
 
     return 0;
 }
@@ -602,7 +619,7 @@ static int hpm_mcan_add_rx_filter_ext(const struct device *dev,
     filter_ext->filter_config = MCAN_FILTER_ELEM_CFG_STORE_IN_RX_FIFO0_IF_MATCH;
     filter_ext->can_id_type = MCAN_CAN_ID_TYPE_EXTENDED;
     filter_ext->filter_id = filter->id;
-    filter_ext->filter_mask = ~filter->mask;
+    filter_ext->filter_mask = filter->mask;
 
     can_config->all_filters_config.ext_id_filter_list.mcan_filter_elem_count = data->ext_filter_count;
     can_config->all_filters_config.ext_id_filter_list.filter_elem_list = data->ext_filters;
@@ -619,7 +636,13 @@ static int hpm_mcan_add_rx_filter_ext(const struct device *dev,
 		data->filter_rtr_mask &= ~(1U << filter_id);
 	}
 
-    (void) mcan_init(can, can_config, can_clk_freq);
+    if (mcan_init(can, can_config, can_clk_freq) != status_success) {
+        data->ext_filter_count--;
+        can_config->all_filters_config.ext_id_filter_list.mcan_filter_elem_count =
+            data->ext_filter_count;
+        k_mutex_unlock(&data->inst_mutex);
+        return -EIO;
+    }
 
     data->rx_cb_ext[filter_id] = callback;
     data->rx_cb_arg_ext[filter_id] = user_data;
@@ -659,7 +682,7 @@ static int hpm_mcan_add_rx_filter_std(const struct device *dev,
     filter_std->filter_config = MCAN_FILTER_ELEM_CFG_STORE_IN_RX_FIFO0_IF_MATCH;
     filter_std->can_id_type = MCAN_CAN_ID_TYPE_STANDARD;
     filter_std->filter_id = filter->id;
-    filter_std->filter_mask = ~filter->mask;
+    filter_std->filter_mask = filter->mask;
 
     can_config->all_filters_config.std_id_filter_list.mcan_filter_elem_count = data->std_filter_count;
     can_config->all_filters_config.std_id_filter_list.filter_elem_list = data->std_filters;
@@ -676,7 +699,13 @@ static int hpm_mcan_add_rx_filter_std(const struct device *dev,
 		data->filter_rtr_mask &= ~(1U << filter_id);
 	}
 
-    (void) mcan_init(can, can_config, can_clk_freq);
+    if (mcan_init(can, can_config, can_clk_freq) != status_success) {
+        data->std_filter_count--;
+        can_config->all_filters_config.std_id_filter_list.mcan_filter_elem_count =
+            data->std_filter_count;
+        k_mutex_unlock(&data->inst_mutex);
+        return -EIO;
+    }
 
     data->rx_cb_std[filter_id] = callback;
     data->rx_cb_arg_std[filter_id] = user_data;
@@ -935,13 +964,22 @@ static int hpm_mcan_start(const struct device *dev)
     struct hpm_mcan_data *data = dev->data;
     mcan_config_t *can_config = &data->config;
     MCAN_Type *can = config->base;
+    hpm_stat_t status;
 
     if (data->started) {
         return -EALREADY;
     }
 
+    /* Ensure PHY standby is released even for internal loopback. */
+    mcan_disable_standby_pin(can);
+
     uint32_t can_clk_freq = clock_get_frequency(config->clock_name);
-    mcan_init(can, can_config, can_clk_freq);
+    status = mcan_init(can, can_config, can_clk_freq);
+    if (status != status_success) {
+        LOG_ERR("mcan_init on start failed (%d) clk=%u mode=%u",
+                status, can_clk_freq, can_config->mode);
+        return -EIO;
+    }
 
     data->started = true;
 
@@ -1037,7 +1075,7 @@ static const struct can_driver_api hpm_mcan_driver_api = {
         static void hpm_mcan_irq_config_func##n(const struct device *dev); \
     \
     static const struct hpm_mcan_config hpm_mcan_cfg_##n = { \
-        .common = CAN_DT_DRIVER_CONFIG_INST_GET(inst, 0, 1000000), \
+        .common = CAN_DT_DRIVER_CONFIG_INST_GET(n, 0, 1000000), \
         .base = (MCAN_Type*)DT_INST_REG_ADDR(n), \
         .clock_name = (clock_name_t)DT_INST_PROP(n, clk_name), \
         .clock_src = (clk_src_t)DT_INST_PROP(n, clk_source), \

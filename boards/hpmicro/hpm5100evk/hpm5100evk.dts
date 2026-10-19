@@ -10,6 +10,7 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/adc/adc.h>
 #include <zephyr/dt-bindings/i2c/i2c.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
 
 / {
 	model = "HPMicro HPM5151EVK";
@@ -20,6 +21,10 @@
 		sw0 = &pbutn;
 		adc0 = &adc0;
 		i2c-0 = &i2c1;
+		pwm-0 = &pwm3;
+		pwm-led0 = &pwm_led0;
+		pwm-led1 = &pwm_led1;
+		counter0 = &gptmr0;
 	};
 
 	chosen {
@@ -31,6 +36,7 @@
 		zephyr,dtcm = &dlm;
 		zephyr,code-partition = &slot0_partition;
 		zephyr,flash-controller = &xpi0;
+		zephyr,canbus = &mcan0;
 	};
 
 	leds {
@@ -49,6 +55,21 @@
 			zephyr,code = <INPUT_KEY_0>;
 		};
 	};
+
+	/*
+	 * BOARD_APP_PWM_OUT1/2 = PWM3 ch0/ch1 on PA16/PA17.
+	 */
+	pwmleds {
+		compatible = "pwm-leds";
+		pwm_led0: pwm_led_0 {
+			pwms = <&pwm3 0 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+			label = "PWM3_CH0_PA16";
+		};
+		pwm_led1: pwm_led_1 {
+			pwms = <&pwm3 1 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+			label = "PWM3_CH1_PA17";
+		};
+	};
 };
 
 &uart0 {
@@ -56,15 +77,50 @@
 	current-speed = <115200>;
 	pinctrl-0 = <&pinmux_uart0>;
 	pinctrl-names = "default";
-	uart-idle-trgm-reg = <0xF047C000>;
-	uart-idle-trgm-pin = <115>;
-	uart-idle-trgm-input-src = <0x0B>;
-	uart-idle-trgm-output-gptmr-in = <0x38>;
-	uart-idle-trgm-output-gptmr-sync = <0x37>;
-	uart-idle-gptmr-reg = <0xF0004000>;
-	uart-idle-gptmr-clock-name = <CLOCK_GPTMR1>;
-	dmas = <&hdma 0 8>, <&hdma 1 9>;
+	wakeup-source;
+	/* Async RX idle: on-chip UART RX-line idle (same UART IRQ). */
+	dmas = <&hdma0 0 8>, <&hdma0 1 9>;
 	dma-names = "rx", "tx";
+};
+
+/*
+ * Stop-mode serial wake input. Connect an external 3.3V USB-UART adapter:
+ * adapter RX <- PY00, adapter TX -> PY01, and common GND. PY00/PY01 are
+ * unavailable to SOC I2C0 while PUART is enabled.
+ */
+&puart {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_puart>;
+	pinctrl-names = "default";
+	wakeup-source;
+};
+
+/*
+ * UART1–3: SoC nodes + board pinmux ready; keep disabled by default.
+ * Enable with status="okay" when needed (see UART_NOTES.md).
+ */
+&uart1 {
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_uart1>;
+	pinctrl-names = "default";
+	status = "disabled";
+};
+
+&uart2 {
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_uart2>;
+	pinctrl-names = "default";
+	/* HDMA mux UART2 RX/TX = 0xC/0xD; pick free HDMA0/HDMA1 channels if enabling async. */
+	status = "disabled";
+};
+
+&uart3 {
+	current-speed = <115200>;
+	pinctrl-0 = <&pinmux_uart3>;
+	pinctrl-names = "default";
+	/* HDMA mux UART3 RX/TX = 0xE/0xF */
+	status = "disabled";
 };
 
 &gpioa {
@@ -73,8 +129,13 @@
 	status = "okay";
 };
 
-&hdma {
+&hdma0 {
 	status = "okay";
+};
+
+/* Second AHB DMA (UM HDMA1). Enable when channel budget on HDMA0 is tight. */
+&hdma1 {
+	status = "disabled";
 };
 
 /*
@@ -88,6 +149,27 @@
 };
 
 /*
+ * BOARD_GPTMR = GPTMR0 CH0 (internal counter / reload IRQ; no pinmux).
+ */
+&gptmr0 {
+	status = "okay";
+};
+
+/*
+ * PMIC-domain GPTMRv2. Owns the Zephyr sysclock so kernel timeouts can
+ * wake Stop (Andes mtimer is in the CPU domain and stops there).
+ */
+&ptmr {
+	status = "okay";
+	wakeup-source;
+	sys-clock;
+};
+
+&mtimer {
+	status = "disabled";
+};
+
+/*
  * BOARD_APP_SPI = SPI3 (PC06 CS / PC10 SCLK / PC13 MOSI / PC15 MISO).
  * Short MOSI-MISO for loopback. MISO(PC15) shares ADC path — high SPI
  * clocks may need the ADC-side capacitor removed (SDK README).
@@ -95,6 +177,20 @@
 &spi3 {
 	status = "okay";
 	pinctrl-0 = <&pinmux_spi3>;
+	pinctrl-names = "default";
+	/* HDMA0 ch6/7: avoid UART0(0/1) and SoC I2S defaults(2-5). Mux SPI3 RX/TX. */
+	dmas = <&hdma0 6 0x6>, <&hdma0 7 0x7>;
+	dma-names = "rx", "tx";
+};
+
+/*
+ * BOARD_APP_PWM = PWM3 (PA16 OUT1 / PA17 OUT2). Scope PA16 for duty/period.
+ */
+&pwm3 {
+	status = "okay";
+	period-init = <50>;
+	dead-zone-in-half-cycle = <0>;
+	pinctrl-0 = <&pinmux_pwm3>;
 	pinctrl-names = "default";
 };
 
@@ -135,9 +231,10 @@
 				reg = <0xE3000 DT_SIZE_K(64)>;
 			};
 
+			/* 1MB flash ends at 0x100000; 0xF3000+64K would overflow. */
 			storage_partition: partition@F3000 {
 				label = "storage";
-				reg = <0xF3000 DT_SIZE_K(64)>;
+				reg = <0xF3000 0xD000>;
 			};
 		};
 	};
@@ -177,4 +274,14 @@ zephyr_udc0: &usb0 {
 		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
 		zephyr,resolution = <12>;
 	};
+};
+
+/*
+ * BOARD_APP_CAN = MCAN0 (PA19 TX / PA20 RX).
+ * Internal loopback does not need a transceiver.
+ */
+&mcan0 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_mcan0>;
+	pinctrl-names = "default";
 };

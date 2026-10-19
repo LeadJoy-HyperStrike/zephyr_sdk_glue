@@ -42,7 +42,7 @@ int main(void)
 			}
 		}
 		if (!found) {
-			printk("  (no ACK — empty bus is OK if nothing is wired)\n");
+			printk("  (no ACK - empty bus is OK if nothing is wired)\n");
 		} else {
 			printk("  %u device(s)\n", found);
 		}
