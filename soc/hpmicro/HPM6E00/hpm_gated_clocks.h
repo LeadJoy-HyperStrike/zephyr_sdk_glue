@@ -54,9 +54,11 @@
  *   watchdog0-3 no node and no wdt_* caller, but CONFIG_WATCHDOG=y is still
  *               set, and gating a watchdog's clock turns a missed feed into a
  *               reset. Bad trade for four blocks.
- *   kman, rng, sdp, pka   crypto. MCUboot verifies with tinycrypt (software)
- *               and the app never asks for entropy, so these look free -- but
- *               the failure mode is a boot that cannot verify.
+ *   kman, rng, sdp, pka   crypto. The app never asks for entropy and verifies
+ *               nothing itself (the BootROM checks the image before it runs),
+ *               so these look free -- but shipped images execute through the
+ *               EXIP decryption the BootROM set up, and nothing here shows
+ *               which of these blocks that path still needs after boot.
  *   ana0-3, aud0-1, ref0-1   clock SOURCES feeding ADC/I2S/pins, not
  *               peripherals. The ADC tree is downstream of them.
  *

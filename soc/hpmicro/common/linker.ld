@@ -165,7 +165,7 @@ SECTIONS
 		 * .exception.entry.*), so .text must NOT claim the input section
 		 * here first (.text is emitted before the ITCM section, and the
 		 * linker hands input sections to the first match). Without an ITCM
-		 * nothing else collects .isr under the Zephyr/MCUboot linker
+		 * nothing else collects .isr under this linker
 		 * layout, so it would orphan to address 0 and IRQ_CONNECT() would
 		 * record a near-NULL handler -> jump-to-0 fault on the first such
 		 * IRQ (ADC was the hit); keep the flash fallback for that case.
