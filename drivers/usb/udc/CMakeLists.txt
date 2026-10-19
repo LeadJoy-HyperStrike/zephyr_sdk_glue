@@ -15,8 +15,9 @@ if(CONFIG_UDC_HPMICRO)
     # CDC only needs short control/bulk chains; 2 QTDs/EP frees ~6KB.
     #
     # The vendor drop also redirected hpm_usb_device.c to a side-by-side
-    # sdk_env_v1.12.0_hpm5100_er_* tree; sdk_env is v1.12.1 now, so
-    # HPM_SDK_DIR already carries that exact file and the redirect is gone.
+    # sdk_env_v1.12.0_hpm5100_er_* tree; sdk_env is v1.13.0 now (HPM5100
+    # official), so HPM_SDK_DIR carries hpm_usb_device.c and the redirect is
+    # gone.
     zephyr_compile_definitions(USB_SOC_DCD_QTD_COUNT_EACH_ENDPOINT=2)
   endif()
 

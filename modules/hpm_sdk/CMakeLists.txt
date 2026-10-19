@@ -45,9 +45,9 @@ endif()
 
 # NOTE: the vendor HPM5100 drop redirected drivers/ to a side-by-side
 # sdk_env_v1.12.0_hpm5100_er_* tree because it assumed sdk_env stayed at
-# v1.11.0 (which has no HPM5100 support). sdk_env is now v1.12.1 with the
-# HPM5100 files overlaid, so HPM_SDK_DIR already provides them and the
-# redirect is gone.
+# v1.11.0 (which has no HPM5100 support). sdk_env is now v1.13.0, which ships
+# HPM5100 officially, so HPM_SDK_DIR already provides it and the redirect is
+# gone.
 add_subdirectory(${HPM_SDK_DIR}/arch ${HPM_SDK_BINARY_DIR}/arch)
 add_subdirectory(${HPM_SDK_DIR}/soc ${HPM_SDK_BINARY_DIR}/soc)
 add_subdirectory(${HPM_SDK_DIR}/drivers ${HPM_SDK_BINARY_DIR}/drivers)

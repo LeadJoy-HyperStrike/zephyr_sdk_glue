@@ -8,7 +8,7 @@
 
 ########################################
 ##  zephyr                    v3.7.0  ##
-##  hpm_sdk                   v1.12.1 ##
+##  hpm_sdk                   v1.13.0 ##
 ########################################
 manifest:
   version: "1.0"
@@ -39,16 +39,12 @@ manifest:
     - name: sdk_env
       repo-path: sdk_env
       path: sdk_env
-      # v1.12.1 官方 tag。HPM5100 支持不在官方发布里(v1.12.0/v1.12.1 都没有),
-      # 需在 checkout 之后把先楫 ER 包的 ~90 个 HPM5100 文件叠为 untracked 文件:
-      #   hpm_sdk/soc/HPM5100/**、hpm_sdk/boards/hpm5100evk/**、
-      #   hpm_sdk/boards/openocd/{hpm5100_all_in_one.cfg,soc/hpm5100.cfg,boards/hpm5100evk.cfg}
-      # 并跑 `west supply` 打 scripts/patch/hpm_sdk_v1.12.1/ 下的必需补丁。
-      # 先楫 2026-10-12 的投放改成 v1.11.0 + 一个本地提交(tag v1.11.0-hpm5100,未推),
-      # 这里不跟:它的 soc/HPM5100 与上面这份叠加 89/90 逐字节相同(唯一差别是
-      # HPM5151/CMakeLists.txt 删了 v1.11 没有的 sdk_check_enabled_fpu),给 v1.11
-      # 回移的 GPTMRV2 / DHC / USB SUTW·SLOM / PCFG NO_DCDC 在 v1.12.1 里本来就有。
-      revision: v1.12.1
+      # v1.13.0 官方 tag,自带 HPM5100(soc/HPM5100、boards/hpm5100evk、openocd 配置),
+      # 不再需要叠先楫 ER 包的 untracked 文件。checkout 之后照旧跑 `west supply`,
+      # 打 scripts/patch/hpm_sdk_v1.13.0/ 下的必需补丁。
+      # 相对 ER 包,官方版去掉了 HPM5151 的 EFC / DHC(DMAMUX 源 61 -> 58 路);
+      # 先楫 2026-10-12 投放里那份 v1.11.0-hpm5100 本地提交不跟。
+      revision: v1.13.0
       submodules: true
     - name: canopennode
       repo-path: canopennode

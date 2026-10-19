@@ -438,7 +438,7 @@
 			#dma-cells = <2>;
 			compatible = "hpmicro,hpm-dmav2";
 			dma-channels = <8>;
-			dma-requests = <61>; /* hpm_dmamux_src.h: 0x00..0x3C */
+			dma-requests = <58>; /* hpm_sdk v1.13.0 hpm_dmamux_src.h: 0x00..0x39 */
 			reg = <0xf00c8000 0x4000>,
 				<0xf00c4000 0x4000>;
 			clk-name = <CLOCK_HDMA0>;
@@ -451,7 +451,7 @@
 			#dma-cells = <2>;
 			compatible = "hpmicro,hpm-dmav2";
 			dma-channels = <8>;
-			dma-requests = <61>; /* shared DMAMUX, hpm_dmamux_src.h: 0x00..0x3C */
+			dma-requests = <58>; /* shared DMAMUX, hpm_sdk v1.13.0 hpm_dmamux_src.h: 0x00..0x39 */
 			reg = <0xf00e4000 0x4000>,
 				<0xf00c4000 0x4000>;
 			clk-name = <CLOCK_HDMA1>;

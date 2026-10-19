@@ -10,6 +10,8 @@
 /*
  * Auto-generated from HPM5151 clock/sysctl headers in:
  * sdk_env/hpm_sdk/soc/HPM5100/HPM5151
+ * (values re-checked against hpm_sdk v1.13.0; CLOCK_EFC0 / CLOCK_DHC removed
+ * with the EFC and DHC blocks the official release no longer lists)
  */
 #define CLK_SRC_OSC24M  0
 #define CLK_SRC_PLL0_CLK0  1
@@ -53,7 +55,6 @@
 #define CLOCK_UART3  17825805
 #define CLOCK_CAN0  19136526
 #define CLOCK_XPI0  19595279
-#define CLOCK_EFC0  19660816
 #define CLOCK_REF0  19857425
 #define CLOCK_REF1  19922962
 #define CLOCK_AHB  4294772222
@@ -81,7 +82,6 @@
 #define CLOCK_PWM2  19399938
 #define CLOCK_PWM3  19465475
 #define CLOCK_EMDS  19531008
-#define CLOCK_DHC  19727616
 #define CLOCK_PTMR  4294902784
 #define CLOCK_PUART  4294902785
 #define CLOCK_PGPIO  4294902786
