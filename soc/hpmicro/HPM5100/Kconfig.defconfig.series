@@ -7,6 +7,7 @@ config SOC_SERIES
 	default "HPM5100"
 
 config SYS_CLOCK_HW_CYCLES_PER_SEC
+	default 1000000 if HPM_PTMR_TIMER
 	default 24000000
 
 config KERNEL_ENTRY

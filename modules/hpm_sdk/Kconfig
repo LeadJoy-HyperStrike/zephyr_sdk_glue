@@ -34,6 +34,8 @@ config HAS_HPMSDK_DMAV2
 	bool
 config HAS_HPMSDK_GPTMR
 	bool
+config HAS_HPMSDK_GPTMRV2
+	bool
 config HAS_HPMSDK_PWM
 	bool
 config HAS_HPMSDK_PWMV2

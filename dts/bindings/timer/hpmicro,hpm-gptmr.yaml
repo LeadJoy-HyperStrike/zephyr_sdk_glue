@@ -1,0 +1,30 @@
+# Copyright 2026 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+description: HPMicro GPTMR or PMIC-domain PTMR (GPTMRv2) as Zephyr counter
+
+compatible: "hpmicro,hpm-gptmr"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  clk-name:
+    type: int
+    required: true
+    description: GPTMR/PTMR clock name (clock_gptmrN or clock_ptmr)
+
+  channel:
+    type: int
+    required: true
+    description: GPTMR channel used as counter (0..3)
+
+  sys-clock:
+    type: boolean
+    description: |
+      This instance is the Zephyr system timer. The counter driver skips it.

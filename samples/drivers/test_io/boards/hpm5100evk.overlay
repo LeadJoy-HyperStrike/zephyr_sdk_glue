@@ -1,0 +1,291 @@
+/*
+ * xT3U 当前已占用/保留的 I/O（HPM5100EVK，供后续分配引脚时查询）：
+ *
+ * 0. 启动 Flash 与调试下载
+ *    - PA09：SPI0_DAT3；PA10：SPI0_SCLK；PA12：SPI0_DAT1；
+ *      PA13：SPI0_DAT0；PA14：SPI0_DAT2；PA11：外部 NOR Flash 片选。
+ *      这些脚由启动 Flash/XPI0 使用，不能复用。
+ *    - D_TRST、D_TMS、D_TCK、D_TDO、D_TDI 为板载调试器使用的 JTAG 网络，
+ *      不应分配给应用。
+ *
+ * 1. USB0（CherryUSB 设备控制器）
+ *    - PB20：USB_DM，专用 USB PHY 焊盘。
+ *    - PB21：USB_DP，专用 USB PHY 焊盘。
+ *    - PB13：USB0_ID；PB14：USB0_PWR；PB15：USB0_OC。
+ *      上述 3 个 USB 辅助控制脚由板级 pinctrl 配置，不应另作 GPIO。
+ *
+ * 2. 调试与板载基础功能
+ *    - PA00：UART0_TXD；PA01：UART0_RXD，连接板载调试器，供 Zephyr
+ *      console/printk 使用。
+ *    - PA30：UART3_RXD；PA31：UART3_TXD，从 J7[9]/J7[10] 引出，
+ *      作为 APP 主通信链路。
+ *    - PY06：UART2_RXD；PY07：UART2_TXD，NS通信链路。PY07与WKUP
+ *      按键侧电容相连，高波特率使用前需要确认波形。
+ *    - PA15：板载用户按键 sw0（低有效）；短按用于手柄全键值上报，长按
+ *      切换 USB 模式。
+ *    - PA18：板载红色 LED（低有效）。
+ *
+ * 3. USB 音频（ES8389）
+ *    - PA22：I2C2_SDA；PA23：I2C2_SCL，ES8389 寄存器控制总线。
+ *    - PB04：I2S0_MCLK；PB09：I2S0_BCLK；PB10：I2S0_FCLK/LRCK。
+ *    - PB00：I2S0_TXD_0，送往 ES8389 DSDIN；PB08：I2S0_RXD_3，
+ *      来自 ES8389 ASDOUT。
+ *
+ * 4. USB SOF 时序测量
+ *    - PC13：GPTMR0_CH1 比较输出，标记 USB SOF 处理入口。
+ *    - PC11：GPIOC11/FGPIO 输出；GPTMR0_CH3 在 SOF 后 60 us 到期并进入
+ *      已注册回调时，由回调的首个 GPIO 操作拉高该脚，用于记录回调实际进入
+ *      的时间。PC11 不再输出 GPTMR0_CH3 的硬件比较器波形。
+ *
+ * 5. 四路摇杆 ADC 与校准
+ *    - PC05：ADC0_IN02，左摇杆 X；PA24：ADC1_IN12，左摇杆 Y。
+ *    - PB12：ADC2_IN09，右摇杆 X；PB11：ADC3_IN11，右摇杆 Y。
+ *    - PC07：GPIOC07，临时摇杆校准按键，P1[15]，内部上拉、低电平有效。
+ *
+ * 6. 板级 DTS 已启用但 xT3U 当前没有业务使用的资源
+ *    - PY03：I2C1_SCL；PY02：I2C1_SDA。
+ *    - PC06：SPI3_CS；PC10：SPI3_SCLK；PC13：SPI3_MOSI；PC15：SPI3_MISO。
+ *      其中 PC13 会在 xT3U 运行期改配为上面的 SOF 测量输出，不能使用 SPI3。
+ *      若计划复用以上资源，须同时调整板级 DTS/pinctrl 和运行时代码，
+ *      不能只修改此 overlay。
+ */
+
+/*
+ * 产品工程把 USB0 交给 CherryUSB。test_io 不编 USB 栈，保持 disabled，
+ * 否则会拉进 cherryusb_hpmicro.c（缺 usb_glue_hpm.h）。
+ */
+cherryusb_usb0: &usb0 {
+	compatible = "hpmicro,hpm-cherryusb";
+	status = "disabled";
+};
+
+&pinctrl {
+	primary_uart3_pins: primary_uart3_pins {
+		group0 {
+			/* J7[9] 为 PA30/UART3_RXD，J7[10] 为 PA31/UART3_TXD。 */
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 30),
+						 IOC_TYPE_IOC, 0, 2)>,
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 31),
+						 IOC_TYPE_IOC, 0, 2)>;
+		};
+	};
+
+	adc_sync_pins: adc_sync_pins {
+		group0 {
+				 /* PC05 = ADC0.IN02：左摇杆 X 轴。 */
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 5),
+						 IOC_TYPE_IOC, 1, 0)>,
+				 /* PA24 = ADC1.IN12：左摇杆 Y 轴。 */
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 24),
+						 IOC_TYPE_IOC, 1, 0)>,
+				 /* PB12 = ADC2.IN09：右摇杆 X 轴。 */
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTB, 12),
+						 IOC_TYPE_IOC, 1, 0)>,
+				 /* PB11 = ADC3.IN11：右摇杆 Y 轴。 */
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTB, 11),
+						 IOC_TYPE_IOC, 1, 0)>;
+		};
+	};
+
+	/*
+	 * xT3U 已填写的直连按键：按键表已确认按下接地，使用内部上拉、低有效。
+	 * 未在 XT3U_BUTTON_GPIO_MAP.md 中填写的按键不在本组中启用。
+	 */
+	pinmux_xt3u_button_gpioa: pinmux_xt3u_button_gpioa {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 25),
+						 IOC_TYPE_IOC, 0, 0)>,
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 26),
+						 IOC_TYPE_IOC, 0, 0)>,
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 27),
+						 IOC_TYPE_IOC, 0, 0)>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up;
+		};
+	};
+
+	pinmux_xt3u_button_gpiob: pinmux_xt3u_button_gpiob {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTB, 1),
+						 IOC_TYPE_IOC, 0, 0)>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up;
+		};
+	};
+
+	pinmux_xt3u_button_gpioc: pinmux_xt3u_button_gpioc {
+		group0 {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 1),
+						 IOC_TYPE_IOC, 0, 0)>,
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 2),
+						 IOC_TYPE_IOC, 0, 0)>,
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 3),
+						 IOC_TYPE_IOC, 0, 0)>,
+				 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 4),
+						 IOC_TYPE_IOC, 0, 0)>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up;
+			keeper-capability-disable;
+		};
+	};
+};
+
+/*
+ * HPM pinctrl 只应用 pinctrl-0 第一个 phandle 的 group。
+ * 不能写成 <&pinmux_gpioa &pinmux_xt3u_button_gpioa>，否则 PA25–27 不生效。
+ */
+&pinmux_gpioa {
+	group_xt3u {
+		pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 25),
+					 IOC_TYPE_IOC, 0, 0)>,
+			 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 26),
+					 IOC_TYPE_IOC, 0, 0)>,
+			 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTA, 27),
+					 IOC_TYPE_IOC, 0, 0)>;
+		input-enable;
+		input-schmitt-enable;
+		bias-pull-up;
+	};
+};
+
+&gpiob {
+	status = "okay";
+	pinctrl-0 = <&pinmux_xt3u_button_gpiob>;
+	pinctrl-names = "default";
+};
+
+/* gpioc 默认 disabled；PC01-PC04 按键启用后需要打开该控制器。 */
+&gpioc {
+	status = "okay";
+	pinctrl-0 = <&pinmux_xt3u_button_gpioc>;
+	pinctrl-names = "default";
+};
+
+/*
+ * 已填写的 xT3U 产品按键。电气属性与 XT3U_BUTTON_GPIO_MAP.md 一致：
+ * 松开=高电平，按下=低电平，内部上拉。
+ */
+/ {
+	xt3u_buttons: xt3u_buttons {
+		compatible = "gpio-keys";
+
+		xt3u_button_up: up {
+			gpios = <&gpiob 1 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "xT3U D-pad Up";
+		};
+
+		xt3u_button_down: down {
+			gpios = <&gpioa 25 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "xT3U D-pad Down";
+		};
+
+		xt3u_button_left: left {
+			gpios = <&gpioa 26 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "xT3U D-pad Left";
+		};
+
+		xt3u_button_right: right {
+			gpios = <&gpioa 27 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "xT3U D-pad Right";
+		};
+
+		xt3u_button_a: button_a {
+			gpios = <&gpioc 1 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "xT3U A";
+		};
+
+		xt3u_button_b: button_b {
+			gpios = <&gpioc 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "xT3U B";
+		};
+
+		xt3u_button_x: button_x {
+			gpios = <&gpioc 3 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "xT3U X";
+		};
+
+		xt3u_button_y: button_y {
+			gpios = <&gpioc 4 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "xT3U Y";
+		};
+	};
+};
+
+/* C 代码通过 aliases 获取按键 GPIO，与 USB 协议层保持解耦。 */
+/ {
+	aliases {
+		xt3u-button-up = &xt3u_button_up;
+		xt3u-button-down = &xt3u_button_down;
+		xt3u-button-left = &xt3u_button_left;
+		xt3u-button-right = &xt3u_button_right;
+		xt3u-button-a = &xt3u_button_a;
+		xt3u-button-b = &xt3u_button_b;
+		xt3u-button-x = &xt3u_button_x;
+		xt3u-button-y = &xt3u_button_y;
+	};
+};
+
+/ {
+	aliases {
+		/* 业务只使用链路名，后续换UART实例时不用修改C代码。 */
+		xt3u-primary-uart = &uart3;
+		xt3u-ns-uart = &uart2;
+	};
+
+	zephyr,user {
+		/*
+		 * adc_sync 帧中的通道顺序：
+		 *   raw[0] = PC05 / ADC0 通道 2  / 左摇杆 X 轴
+		 *   raw[1] = PA24 / ADC1 通道 12 / 左摇杆 Y 轴
+		 *   raw[2] = PB12 / ADC2 通道 9  / 右摇杆 X 轴
+		 *   raw[3] = PB11 / ADC3 通道 11 / 右摇杆 Y 轴
+		 */
+		io-channels = <&adc0 2>, <&adc1 12>, <&adc2 9>, <&adc3 11>;
+		pinctrl-0 = <&adc_sync_pins>;
+		pinctrl-names = "default";
+	};
+};
+
+/* APP主通信链路：J7[9] PA30 RX / J7[10] PA31 TX。 */
+&uart3 {
+	status = "okay";
+	current-speed = <2000000>;
+	pinctrl-0 = <&primary_uart3_pins>;
+	pinctrl-names = "default";
+	/* HDMA0：RX 使用通道 2/UART3_RX(0x0e)，TX 使用通道 3/UART3_TX(0x0f)。 */
+	dmas = <&hdma 2 0x0e>, <&hdma 3 0x0f>;
+	dma-names = "rx", "tx";
+};
+
+/* NS链路：PY06 RX / PY07 TX。协议内容由NS模块负责。 */
+&uart2 {
+	status = "okay";
+	current-speed = <1000000>;
+	pinctrl-0 = <&pinmux_uart2>;
+	pinctrl-names = "default";
+	/* HDMA0：RX 使用通道 4/UART2_RX(0x0c)，TX 使用通道 5/UART2_TX(0x0d)。 */
+	dmas = <&hdma 4 0x0c>, <&hdma 5 0x0d>;
+	dma-names = "rx", "tx";
+};
+
+/*
+ * HDMA0 由项目内 uart_transport 直接管理，Zephyr 公共 DMA 驱动不实例化。
+ * UART0 的 console 仍使用轮询方式，不占用它在板级 DTS 中预留的 ch0/ch1。
+ */
+&hdma {
+	status = "disabled";
+};
+
+/*
+ * Zephyr 默认 RAM 放到 128 KB DLM(DTCM)；只有 CherryUSB/audio 的 DMA
+ * .nocache 段继续放在 32 KB HRAM(AHB SRAM)。当 RAM 与 DTCM 地址重合时，
+ * HPM 链接脚本会把启动栈放在默认 RAM 区域，避免内存区域重叠。
+ */
+/ {
+	chosen {
+		zephyr,sram = &dlm;
+	};
+};

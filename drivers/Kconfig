@@ -22,4 +22,6 @@ rsource "usb/cherryusb/Kconfig.hpmicro"
 rsource "ethernet/Kconfig.hpmicro"
 rsource "flash/Kconfig.hpmicro"
 rsource "hwinfo/Kconfig.hpmicro"
+rsource "counter/Kconfig.hpmicro"
+rsource "timer/Kconfig.hpmicro"
 endmenu

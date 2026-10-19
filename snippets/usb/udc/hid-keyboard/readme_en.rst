@@ -30,7 +30,7 @@ As hpm5100evk for example:
 Notes for hpm5100evk:
 
 - Use board USB0 data port; ``sw0`` / ``led0`` are used by the sample.
-- Overlay enables ``polling-mode`` on ``gpio_keys`` (HPM GPIO lacks ``GPIO_INT_EDGE_BOTH``).
+- Overlay uses interrupt path on ``gpio_keys`` (HPM5151 supports ``GPIO_INT_EDGE_BOTH``).
 
 Known Issues
 -------------

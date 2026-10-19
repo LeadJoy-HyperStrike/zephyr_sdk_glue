@@ -24,25 +24,20 @@
 #define HPM_I2C_STATUS_ADDRHIT             4
 
 /*
- * A controller transfer is bounded by what it can take on the wire, never by a
- * single constant: one message may carry I2C_SOC_TRANSFER_COUNT_MAX (4096)
- * bytes, which is ~369 ms at the 100 kHz this driver defaults to.  Budget the
- * ideal bus time times a margin, plus a floor that leaves short transfers a
- * generous allowance for the automatic clock stretching of RM 61.2.1.
+ * Two implementations share this file since the 2026-10-12 vendor HPM5100
+ * drop (sdk_glue vendor/hpm5100-2026-10-12):
+ *
+ * - CONFIG_SOC_SERIES_HPM5100: the vendor driver, verbatim (SDK polling
+ *   helpers for single-message transfers, 100 ms completion wait, reworked
+ *   address-hit / NACK handling in the ISR).
+ * - every other SoC: the pre-merge driver, verbatim. HS2 (HPM6E80) images
+ *   must not change: the touchpad rides on its bus-time-bounded transfers,
+ *   RM-ordered abort, refusal of mis-sequenced message shapes and
+ *   arm-before-launch interrupt enabling.
+ *
+ * The config/transfer structs, configure(), target (un)register, init and
+ * the instance macros are identical in both and shared.
  */
-#define HPM_I2C_TIMEOUT_FLOOR_MS           20U
-#define HPM_I2C_TIMEOUT_MARGIN             2U
-#define HPM_I2C_BITS_PER_BYTE              9U
-
-#define HPM_I2C_SPEED_STANDARD_HZ          100000U
-#define HPM_I2C_SPEED_FAST_HZ              400000U
-#define HPM_I2C_SPEED_FAST_PLUS_HZ         1000000U
-
-/* A STOP costs one SCL period plus setup/hold; allow a byte time of slack. */
-#define HPM_I2C_STOP_BUDGET_BITS           16U
-/* RM 61.3.8: CTRL.RESET_LEN defaults to 9 clocks, the I2C-spec unwedge. */
-#define HPM_I2C_RECOVERY_CLOCKS            9U
-
 struct hpmicro_i2c_config {
 	I2C_Type *base;
 	uint32_t clock_name;
@@ -61,6 +56,461 @@ struct hpmicro_i2c_current_transfer {
 	uint8_t addr;
 	uint8_t status;
 };
+
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+
+struct hpmicro_i2c_data {
+	struct hpmicro_i2c_current_transfer transfer;
+	struct i2c_target_config *slave;
+	struct k_sem completion;
+	struct k_mutex mutex;
+};
+
+#define DEV_BASE(dev) (((struct hpmicro_i2c_config *)(dev->config))->base)
+
+static int hpmicro_i2c_set_bus_speed(const struct device *dev, uint32_t dev_config)
+{
+	hpm_stat_t stat;
+	const struct hpmicro_i2c_config *cfg = dev->config;
+	struct hpmicro_i2c_data *data = dev->data;
+	i2c_config_t config;
+	uint32_t freq;
+	/* Configure clock and de-assert reset for I2Cx */
+	clock_set_source_divider(cfg->clock_name, cfg->clock_src, cfg->clock_div);
+	clock_add_to_group(cfg->clock_name, 0);
+
+	switch (I2C_SPEED_GET(dev_config)) {
+	case I2C_SPEED_STANDARD:
+		config.i2c_mode = i2c_mode_normal;
+		break;
+	case I2C_SPEED_FAST:
+		config.i2c_mode = i2c_mode_fast;
+		break;
+	case I2C_SPEED_FAST_PLUS:
+		config.i2c_mode = i2c_mode_fast_plus;
+		break;
+	case I2C_SPEED_HIGH:
+	case I2C_SPEED_ULTRA:
+		return -ENOTSUP;
+	default:
+		return -EINVAL;
+	}
+
+	if (dev_config & I2C_ADDR_10_BITS) {
+			config.is_10bit_addressing = true;
+	} else {
+			config.is_10bit_addressing = false;
+	}
+
+	freq = clock_get_frequency(cfg->clock_name);
+	if (data->slave) {
+		stat = i2c_init_slave(cfg->base, freq, &config, data->slave->address);
+    if (stat != status_success) {
+        return -EINVAL;
+    }
+	} else {
+		stat = i2c_init_master(cfg->base, freq, &config);
+    if (stat != status_success) {
+        return -EINVAL;
+    }
+	}
+	return 0;
+}
+
+static int hpmicro_i2c_configure(const struct device *dev,
+				  uint32_t dev_config)
+{
+	struct hpmicro_i2c_data *data = dev->data;
+	int ret;
+
+	k_mutex_lock(&data->mutex, K_FOREVER);
+	ret = hpmicro_i2c_set_bus_speed(dev, dev_config);
+
+	if (ret) {
+		k_mutex_unlock(&data->mutex);
+		return ret;
+	}
+	k_mutex_unlock(&data->mutex);
+	return 0;
+}
+
+static int hpmicro_i2c_transfer(const struct device *dev,
+				 struct i2c_msg *msgs,
+				 uint8_t num_msgs, uint16_t addr)
+{
+	const struct hpmicro_i2c_config *cfg = dev->config;
+	struct hpmicro_i2c_data *data = dev->data;
+	int ret = 0;
+	uint32_t ctrl = 0;
+	hpm_stat_t stat;
+
+	if (!num_msgs) {
+		return 0;
+	}
+
+	if (msgs->len > I2C_SOC_TRANSFER_COUNT_MAX) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->mutex, K_FOREVER);
+
+	/*
+	 * Address probe / simple master write-read: use SDK polling helpers so
+	 * ADDRHIT (slave ACK) is judged the same way as hpm_sdk i2c_master_write.
+	 * The IRQ path historically reported false ACK on empty buses.
+	 */
+	if (!data->slave && num_msgs == 1U &&
+	    ((msgs->flags & I2C_MSG_RW_MASK) == I2C_MSG_WRITE)) {
+		if (msgs->flags & I2C_MSG_ADDR_10_BITS) {
+			i2c_enable_10bit_address_mode(cfg->base, true);
+		} else {
+			i2c_enable_10bit_address_mode(cfg->base, false);
+		}
+		stat = i2c_master_write(cfg->base, addr, msgs->buf, msgs->len);
+		k_mutex_unlock(&data->mutex);
+		if (stat == status_i2c_no_addr_hit) {
+			return -ENXIO;
+		}
+		if (stat != status_success) {
+			return -EIO;
+		}
+		return 0;
+	}
+
+	if (!data->slave && num_msgs == 1U &&
+	    ((msgs->flags & I2C_MSG_RW_MASK) == I2C_MSG_READ)) {
+		if (msgs->flags & I2C_MSG_ADDR_10_BITS) {
+			i2c_enable_10bit_address_mode(cfg->base, true);
+		} else {
+			i2c_enable_10bit_address_mode(cfg->base, false);
+		}
+		stat = i2c_master_read(cfg->base, addr, msgs->buf, msgs->len);
+		k_mutex_unlock(&data->mutex);
+		if (stat == status_i2c_no_addr_hit) {
+			return -ENXIO;
+		}
+		if (stat != status_success) {
+			return -EIO;
+		}
+		return 0;
+	}
+
+	data->transfer.msgs = msgs;
+	data->transfer.curr_buf = msgs->buf;
+	data->transfer.curr_len = msgs->len;
+	data->transfer.curr_index = 0;
+	data->transfer.nr_msgs = num_msgs;
+	data->transfer.addr = addr;
+	data->transfer.status = HPM_I2C_STATUS_SLAVE_IDLE;
+
+	if (data->slave) {
+		i2c_enable_irq(cfg->base, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE);
+	} else {
+		if (data->transfer.msgs->flags & I2C_MSG_ADDR_10_BITS) {
+			i2c_enable_10bit_address_mode(cfg->base, true);
+		} else {
+			i2c_enable_10bit_address_mode(cfg->base, false);
+		}
+		/* W1C sticky bits before starting */
+		cfg->base->STATUS = I2C_STATUS_CMPL_MASK | I2C_STATUS_ADDRHIT_MASK;
+		cfg->base->CMD = I2C_CMD_CLEAR_FIFO;
+		cfg->base->ADDR = I2C_ADDR_ADDR_SET(data->transfer.addr);
+		if ((data->transfer.msgs->flags & I2C_MSG_RW_MASK) == I2C_MSG_WRITE) {
+			ctrl |= I2C_CTRL_DIR_SET(I2C_DIR_MASTER_WRITE);
+		} else {
+			ctrl |= I2C_CTRL_DIR_SET(I2C_DIR_MASTER_READ);
+		}
+		ctrl |= I2C_CTRL_PHASE_START_SET(true) | I2C_CTRL_PHASE_ADDR_SET(true);
+		if (data->transfer.msgs->flags & I2C_MSG_STOP) {
+			ctrl |= I2C_CTRL_PHASE_STOP_SET(true);
+		} else {
+			ctrl |= I2C_CTRL_PHASE_STOP_SET(false);
+		}
+		if (data->transfer.curr_len > 0) {
+			ctrl |= I2C_CTRL_PHASE_DATA_SET(true)
+#ifdef I2C_CTRL_DATACNT_HIGH_MASK
+				| I2C_CTRL_DATACNT_HIGH_SET(I2C_DATACNT_MAP(data->transfer.curr_len) >> 8U)
+#endif
+				| I2C_CTRL_DATACNT_SET(I2C_DATACNT_MAP(data->transfer.curr_len));
+		}
+		cfg->base->CTRL = ctrl;
+		cfg->base->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
+		i2c_enable_irq(cfg->base, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE);
+	}
+
+	if (k_sem_take(&data->completion, K_MSEC(100)) != 0) {
+		i2c_disable_irq(cfg->base, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE |
+					   I2C_EVENT_FIFO_EMPTY | I2C_EVENT_FIFO_FULL);
+		ret = -ETIMEDOUT;
+	} else if (data->transfer.status == HPM_I2C_STATUS_NOT_ADDRHIT) {
+		ret = -ENXIO;
+	}
+
+	k_mutex_unlock(&data->mutex);
+	return ret;
+}
+
+static int hpmicro_i2c_slave_register(const struct device *dev,
+				       struct i2c_target_config *cfg)
+{
+	const struct hpmicro_i2c_config *dev_cfg = dev->config;
+	struct hpmicro_i2c_data *data = dev->data;
+	int ret = 0;
+	hpm_stat_t stat;
+	i2c_config_t config;
+	uint32_t freq;
+
+	if (!cfg) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->mutex, K_FOREVER);
+	if (data->slave) {
+		ret = -EBUSY;
+		goto exit;
+	}
+
+	data->slave = cfg;
+
+	if (cfg->flags & I2C_TARGET_FLAGS_ADDR_10_BITS) {
+			config.is_10bit_addressing = true;
+	} else {
+			config.is_10bit_addressing = false;
+	}
+
+	config.i2c_mode = i2c_mode_normal;
+	freq = clock_get_frequency(dev_cfg->clock_name);
+	stat = i2c_init_slave(dev_cfg->base, freq, &config, cfg->address);
+	if (stat != status_success) {
+			return -EINVAL;
+	}
+	return 0;
+
+exit:
+	k_mutex_unlock(&data->mutex);
+	return ret;
+}
+
+
+static int hpmicro_i2c_slave_unregister(const struct device *dev,
+					 struct i2c_target_config *cfg)
+{
+	struct hpmicro_i2c_data *data = dev->data;
+	if (!cfg) {
+		return -EINVAL;
+	}
+	if (data->slave != cfg) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&data->mutex, K_FOREVER);
+	data->slave = NULL;
+	k_mutex_unlock(&data->mutex);
+
+	return 0;
+}
+
+static int hpmicro_restart_i2c(const struct device *dev, uint32_t size)
+{
+	struct hpmicro_i2c_data *data = dev->data;
+	I2C_Type *i2c = DEV_BASE(dev);
+	struct hpmicro_i2c_current_transfer *transfer = &data->transfer;
+	uint32_t ctrl = 0;
+	if (size > I2C_SOC_TRANSFER_COUNT_MAX) {
+		return -EINVAL;
+	}
+
+	/* W1C, clear CMPL bit to avoid blocking the transmission */
+	// printk("isr:%d\n", transfer->nr_msgs);
+	i2c->STATUS = I2C_STATUS_CMPL_MASK;
+	i2c->CMD = I2C_CMD_CLEAR_FIFO;
+	i2c->ADDR = I2C_ADDR_ADDR_SET(data->transfer.addr);
+
+	if ((transfer->msgs->flags & I2C_MSG_RW_MASK) == I2C_MSG_WRITE) {
+		ctrl |= I2C_CTRL_DIR_SET(I2C_DIR_MASTER_WRITE);
+	} else {
+		ctrl |= I2C_CTRL_DIR_SET(I2C_DIR_MASTER_READ);
+	}
+	/* start signal */
+	if (transfer->msgs->flags & I2C_MSG_RESTART) {
+		ctrl |= I2C_CTRL_PHASE_START_SET(true) | I2C_CTRL_PHASE_ADDR_SET(true);
+	}
+	/* end signal*/
+	if (data->transfer.msgs->flags & I2C_MSG_STOP) {
+			ctrl |= I2C_CTRL_PHASE_STOP_SET(true);
+	} else {
+			ctrl |= I2C_CTRL_PHASE_STOP_SET(false);
+	}
+	if (data->transfer.curr_len > 0) {
+		ctrl |= I2C_CTRL_PHASE_DATA_SET(true)
+#ifdef I2C_CTRL_DATACNT_HIGH_MASK
+											| I2C_CTRL_DATACNT_HIGH_SET(I2C_DATACNT_MAP(data->transfer.curr_len) >> 8U)
+#endif
+											| I2C_CTRL_DATACNT_SET(I2C_DATACNT_MAP(data->transfer.curr_len));
+	}
+	i2c->CTRL = ctrl;
+	i2c->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
+	if (transfer->msgs->flags & I2C_MSG_RESTART) {
+		i2c_enable_irq(i2c, I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE);
+	} else {
+		i2c_enable_irq(i2c, I2C_EVENT_FIFO_EMPTY | I2C_EVENT_TRANSACTION_COMPLETE);
+	}
+	return 0;
+}
+
+__attribute__((section(".isr"))) static void hpmicro_i2c_isr(const struct device *dev)
+{
+	struct hpmicro_i2c_data *data = dev->data;
+	I2C_Type *i2c = DEV_BASE(dev);
+	struct hpmicro_i2c_current_transfer *transfer = &data->transfer;
+	uint8_t val;
+
+	volatile uint32_t status, irq;
+	status = i2c_get_status(i2c);
+	irq = i2c_get_irq_setting(i2c);
+
+	/* Address hit = slave ACK (master) / addressed (slave). Do not treat
+	 * every other IRQ as NACK — that raced with COMPLETE and broke probes.
+	 */
+	if ((status & I2C_EVENT_ADDRESS_HIT) && (irq & I2C_EVENT_ADDRESS_HIT)) {
+		data->transfer.status = HPM_I2C_STATUS_ADDRHIT;
+		i2c_clear_status(i2c, I2C_EVENT_ADDRESS_HIT);
+		i2c_disable_irq(i2c, I2C_EVENT_ADDRESS_HIT);
+		if (data->slave) {
+			if (I2C_DIR_SLAVE_READ == i2c_get_direction(i2c)) {
+				i2c_enable_irq(i2c, I2C_EVENT_FIFO_FULL);
+				data->slave->callbacks->write_requested(data->slave);
+			} else {
+				data->transfer.status = HPM_I2C_STATUS_SLAVE_BEGIN_WRITE;
+				i2c_enable_irq(i2c, I2C_EVENT_FIFO_EMPTY);
+			}
+		} else if (data->transfer.curr_len > 0U) {
+			if ((data->transfer.msgs->flags & I2C_MSG_RW_MASK) == I2C_MSG_WRITE) {
+				i2c_enable_irq(i2c, I2C_EVENT_FIFO_EMPTY);
+			} else {
+				i2c_enable_irq(i2c, I2C_EVENT_FIFO_FULL);
+			}
+		}
+	}
+
+    /* transmit */
+	if ((status & I2C_EVENT_FIFO_EMPTY) && (irq & I2C_EVENT_FIFO_EMPTY)) {
+			if (data->slave) {
+				if (data->transfer.status == HPM_I2C_STATUS_SLAVE_BEGIN_WRITE) {
+					data->slave->callbacks->read_processed(data->slave, &val);
+					data->transfer.status = HPM_I2C_STATUS_SLAVE_NEXT_WRITE;
+				} else {
+					data->slave->callbacks->read_requested(data->slave, &val);
+				}
+				i2c_write_byte(i2c, val);
+			} else {
+				if ((transfer->curr_len > 0) && (data->transfer.status != HPM_I2C_STATUS_NOT_ADDRHIT)) {
+					while (!i2c_fifo_is_full(i2c)) {
+							i2c_write_byte(i2c, transfer->curr_buf[transfer->curr_index++]);
+							if (transfer->curr_index == transfer->curr_len) {
+									i2c_disable_irq(i2c, I2C_EVENT_FIFO_EMPTY);
+									break;
+							}
+					}
+				}
+			}
+	}
+
+	/* receive */
+	if (status & I2C_EVENT_FIFO_FULL) {
+		if (data->slave) {
+			while (!i2c_fifo_is_empty(i2c)) {
+				data->slave->callbacks->write_received(data->slave, i2c_read_byte(i2c));
+			}
+		} else {
+			while (!i2c_fifo_is_empty(i2c)) {
+				transfer->curr_buf[transfer->curr_index++] = i2c_read_byte(i2c);
+			}
+			if ((transfer->curr_index == transfer->curr_len) && (transfer->curr_len > 0)) {
+				i2c_disable_irq(i2c, I2C_EVENT_FIFO_FULL);
+				transfer->msgs++;
+				transfer->nr_msgs--;
+				transfer->curr_buf = transfer->msgs->buf;
+				transfer->curr_len = transfer->msgs->len;
+				transfer->curr_index = 0;
+				if (transfer->nr_msgs != 0) {
+					if (hpmicro_restart_i2c(dev, transfer->curr_len) < 0) {
+						i2c->CTRL |= I2C_CTRL_PHASE_STOP_MASK;
+					}
+				}
+			}
+		}
+	}
+
+	/* complete */
+	if (status & I2C_EVENT_TRANSACTION_COMPLETE) {
+		i2c_disable_irq(i2c, I2C_EVENT_TRANSACTION_COMPLETE | I2C_EVENT_FIFO_FULL |
+				     I2C_EVENT_FIFO_EMPTY | I2C_EVENT_ADDRESS_HIT);
+		i2c_clear_status(i2c, I2C_EVENT_TRANSACTION_COMPLETE);
+		if (data->slave) {
+			if (I2C_DIR_MASTER_READ == i2c_get_direction(i2c)) {
+				while (!i2c_fifo_is_empty(i2c)) {
+					data->slave->callbacks->write_received(data->slave,
+										i2c_read_byte(i2c));
+				}
+			}
+			data->slave->callbacks->stop(data->slave);
+			k_sem_give(&data->completion);
+			return;
+		}
+
+		/* Master: no ADDRHIT means NACK / empty address. */
+		if (data->transfer.status != HPM_I2C_STATUS_ADDRHIT) {
+			data->transfer.status = HPM_I2C_STATUS_NOT_ADDRHIT;
+			k_sem_give(&data->completion);
+			return;
+		}
+
+		if (I2C_DIR_MASTER_READ == i2c_get_direction(i2c)) {
+			while ((!i2c_fifo_is_empty(i2c)) &&
+			       (transfer->curr_index < transfer->curr_len)) {
+				transfer->curr_buf[transfer->curr_index++] = i2c_read_byte(i2c);
+				if (transfer->curr_index == transfer->curr_len) {
+					break;
+				}
+			}
+		}
+
+		transfer->nr_msgs--;
+		if ((transfer->nr_msgs > 0U) &&
+		    (data->transfer.status == HPM_I2C_STATUS_ADDRHIT)) {
+			transfer->msgs++;
+			transfer->curr_buf = transfer->msgs->buf;
+			transfer->curr_len = transfer->msgs->len;
+			transfer->curr_index = 0;
+			hpmicro_restart_i2c(dev, data->transfer.curr_len);
+		} else {
+			k_sem_give(&data->completion);
+		}
+	}
+}
+
+#else /* !CONFIG_SOC_SERIES_HPM5100 */
+
+/*
+ * A controller transfer is bounded by what it can take on the wire, never by a
+ * single constant: one message may carry I2C_SOC_TRANSFER_COUNT_MAX (4096)
+ * bytes, which is ~369 ms at the 100 kHz this driver defaults to.  Budget the
+ * ideal bus time times a margin, plus a floor that leaves short transfers a
+ * generous allowance for the automatic clock stretching of RM 61.2.1.
+ */
+#define HPM_I2C_TIMEOUT_FLOOR_MS           20U
+#define HPM_I2C_TIMEOUT_MARGIN             2U
+#define HPM_I2C_BITS_PER_BYTE              9U
+
+#define HPM_I2C_SPEED_STANDARD_HZ          100000U
+#define HPM_I2C_SPEED_FAST_HZ              400000U
+#define HPM_I2C_SPEED_FAST_PLUS_HZ         1000000U
+
+/* A STOP costs one SCL period plus setup/hold; allow a byte time of slack. */
+#define HPM_I2C_STOP_BUDGET_BITS           16U
+/* RM 61.3.8: CTRL.RESET_LEN defaults to 9 clocks, the I2C-spec unwedge. */
+#define HPM_I2C_RECOVERY_CLOCKS            9U
 
 struct hpmicro_i2c_data {
 	struct hpmicro_i2c_current_transfer transfer;
@@ -614,6 +1064,8 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_isr(const struct device
 			}
 	}
 }
+
+#endif /* CONFIG_SOC_SERIES_HPM5100 */
 
 
 static int hpmicro_i2c_init(const struct device *dev)

@@ -14,8 +14,10 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/drivers/dma.h>
+#include <zephyr/pm/device.h>
 
 #include <hpm_common.h>
+#include <hpm_clock_drv.h>
 #include <hpm_dmav2_drv.h>
 #include <hpm_dmamux_drv.h>
 #include <hpm_misc.h>
@@ -27,6 +29,11 @@ struct dma_hpm_dma_config {
 	DMA_Type *base;
 	DMAMUX_Type *dmamux_base;
 	int dma_channels; /* number of channels */
+#ifdef CONFIG_PM_DEVICE
+	/* PM action only (clk-name is optional in the binding). */
+	uint32_t clock_name;
+	uint32_t irq;
+#endif
 	void (*irq_config_func)(const struct device *dev);
 };
 
@@ -60,17 +67,55 @@ struct dma_hpm_data {
 #define DEV_CHANNEL_DATA(dev, ch) \
 	((struct call_back *)(&(DEV_DATA(dev)->data_cb[ch])))
 
+#ifdef CONFIG_PM_DEVICE
+static bool dma_hpm_any_busy(const struct device *dev)
+{
+	const struct dma_hpm_dma_config *config = DEV_CFG(dev);
+
+	for (uint32_t channel = 0U; channel < config->dma_channels; channel++) {
+		if (DEV_CHANNEL_DATA(dev, channel)->busy) {
+			return true;
+		}
+	}
+
+	return false;
+}
+#endif
+
+static void dma_hpm_update_pm_busy(const struct device *dev)
+{
+#ifdef CONFIG_PM_DEVICE
+	if (dma_hpm_any_busy(dev)) {
+		pm_device_busy_set(dev);
+	} else {
+		pm_device_busy_clear(dev);
+	}
+#else
+	ARG_UNUSED(dev);
+#endif
+}
+
 static void hpm_dma_callback(const struct device *dev, void *param, uint8_t channel, bool success)
 {
 	int ret = -1;
 	struct call_back *data = (struct call_back *)param;
 
 	/* dma transfer termination, status may be transfer complete, error, abort */
-	data->busy = 0;
+	data->busy = false;
+	dma_hpm_update_pm_busy(dev);
 	if (success) {
 		ret = 0;
 	}
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+	/* Vendor HPM5100 drop. Other SoCs keep the pre-merge call so their
+	 * images stay byte-identical.
+	 */
+	if (data->dma_callback != NULL) {
+		data->dma_callback(data->dev, data->user_data, channel, ret);
+	}
+#else
 	data->dma_callback(data->dev, data->user_data, channel, ret);
+#endif
 }
 
 __attribute__((section(".isr")))static void dma_hpm_dma_irq_handler(const struct device *dev)
@@ -281,6 +326,7 @@ static int dma_hpm_dma_configure(const struct device *dev, uint32_t channel, str
 	}
 
 	data->busy = false;
+	dma_hpm_update_pm_busy(dev);
 	if (config->dma_callback) {
 		LOG_DBG("INSTALL call back on channel %d", channel);
 		data->user_data = config->user_data;
@@ -301,6 +347,7 @@ static int dma_hpm_dma_start(const struct device *dev, uint32_t channel)
 	if (data->transfer_settings.valid == true) {
 		LOG_DBG("START DMA channel %d TRANSFER", channel);
 		data->busy = true;
+		pm_device_busy_set(dev);
 		dma_enable_channel(DEV_BASE(dev), channel);
 	} else {
 		LOG_DBG("DMA channel %d is not configured", channel);
@@ -323,6 +370,7 @@ static int dma_hpm_dma_stop(const struct device *dev, uint32_t channel)
 	dma_abort_channel(DEV_BASE(dev), (1U << channel));
 	dma_clear_transfer_status(DEV_BASE(dev), channel);
 	data->data_cb[channel].busy = false;
+	dma_hpm_update_pm_busy(dev);
 	return 0;
 }
 
@@ -409,6 +457,33 @@ static const struct dma_driver_api dma_hpm_dma_api = {
 	.get_status = dma_hpm_dma_get_status,
 };
 
+#ifdef CONFIG_PM_DEVICE
+static int dma_hpm_pm_action(const struct device *dev,
+			     enum pm_device_action action)
+{
+	const struct dma_hpm_dma_config *config = DEV_CFG(dev);
+
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+		if (dma_hpm_any_busy(dev)) {
+			return -EBUSY;
+		}
+
+		irq_disable(config->irq);
+		clock_remove_from_group(config->clock_name, 0);
+		return 0;
+
+	case PM_DEVICE_ACTION_RESUME:
+		clock_add_to_group(config->clock_name, 0);
+		irq_enable(config->irq);
+		return 0;
+
+	default:
+		return -ENOTSUP;
+	}
+}
+#endif /* CONFIG_PM_DEVICE */
+
 static int dma_hpm_dma_init(const struct device *dev)
 {
 	const struct dma_hpm_dma_config *config = dev->config;
@@ -436,6 +511,14 @@ static int dma_hpm_dma_init(const struct device *dev)
 		irq_enable(DT_INST_IRQN(n));				\
 	}
 
+#ifdef CONFIG_PM_DEVICE
+#define DMA_HPM_PM_CFG(n)					       \
+		.clock_name = DT_INST_PROP(n, clk_name),	       \
+		.irq = DT_INST_IRQN(n),
+#else
+#define DMA_HPM_PM_CFG(n)
+#endif
+
 #define DMA_INIT(n)						       \
 	static void dma_hpm_config_func_##n(const struct device *dev); \
 	static const struct dma_hpm_dma_config dma_config_##n = {    \
@@ -443,13 +526,16 @@ static int dma_hpm_dma_init(const struct device *dev)
 		.dmamux_base =					       \
 			(DMAMUX_Type *)DT_INST_REG_ADDR_BY_IDX(n, 1),  \
 		.dma_channels = DT_INST_PROP(n, dma_channels),	       \
+		DMA_HPM_PM_CFG(n)				       \
 		.irq_config_func = dma_hpm_config_func_##n,	       \
 	};							       \
 								       \
 	struct dma_hpm_data dma_data_##n;			       \
 								       \
+	PM_DEVICE_DT_INST_DEFINE(n, dma_hpm_pm_action);		       \
+								       \
 	DEVICE_DT_INST_DEFINE(n,				       \
-			      dma_hpm_dma_init, NULL,	       \
+			      dma_hpm_dma_init, PM_DEVICE_DT_INST_GET(n), \
 			      &dma_data_##n, &dma_config_##n,	       \
 			      PRE_KERNEL_1, CONFIG_DMA_INIT_PRIORITY,   \
 			      &dma_hpm_dma_api);		       \

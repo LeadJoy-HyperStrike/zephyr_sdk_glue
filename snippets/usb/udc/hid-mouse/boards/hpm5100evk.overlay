@@ -8,11 +8,4 @@
 	num-bidir-endpoints = <8>;
 };
 
-/*
- * HPM GPIO does not support GPIO_INT_EDGE_BOTH; gpio-keys needs polling.
- */
-/ {
-	gpio_keys {
-		polling-mode;
-	};
-};
+/* USER KEY PA15 uses GPIO EDGE_BOTH IRQ (HPM5151 GPIO_SOC_HAS_EDGE_BOTH). */

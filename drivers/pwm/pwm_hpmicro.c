@@ -40,109 +40,187 @@ struct pwm_hpmicro_config {
 };
 
 struct pwm_hpmicro_data {
+#if CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED
+	/* PWM v1 only (2026-10-12 vendor rewrite of the v1 path). */
+	uint32_t configured_period;
+	uint8_t channel_ready_mask;
+	uint8_t invert_mask; /* bit N = channel N inverted */
+#else
+	/* Unused by the PWMv2 path; kept as-is so v2-only images (HPM6E00)
+	 * keep their pre-merge .bss layout.
+	 */
 	uint32_t period_cycles[1];
+#endif
 };
 
 /* PWM version specific implementations */
 #if CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED
+/*
+ * Edge-aligned PWM v1 (SDK pwm_output style).
+ * - 64-bit duty math (uint32 pulse*rld overflows above ~30% @120MHz/1kHz)
+ * - One counter/reload for the module
+ * - CMP shadow updates on reload (atomic vs update_on_modify glitches)
+ * - Opposite polarity on ch0/ch1 → both bind to CMP0 (true complementary lock)
+ */
+static uint8_t hpmicro_pwm_v1_cmp_index(const struct pwm_hpmicro_data *data,
+					uint32_t channel, bool invert)
+{
+	uint8_t partner = (uint8_t)(channel ^ 1U);
+	bool partner_ready;
+	bool partner_invert;
+
+	if (channel > 1U) {
+		return (uint8_t)channel;
+	}
+
+	partner_ready = (data->channel_ready_mask & BIT(partner)) != 0U;
+	partner_invert = (data->invert_mask & BIT(partner)) != 0U;
+
+	/* Complementary pair: share CMP0 so edges cannot drift. */
+	if (partner_ready && (partner_invert != invert)) {
+		return 0U;
+	}
+
+	return (uint8_t)channel;
+}
+
 static int hpmicro_pwm_v1_set_cycles(const struct device *dev, uint32_t channel,
 		       uint32_t period_cycles, uint32_t pulse_cycles,
 		       pwm_flags_t flags)
 {
 	const struct pwm_hpmicro_config *config = dev->config;
+	struct pwm_hpmicro_data *data = dev->data;
 	pwm_config_t pwm_config;
-	pwm_cmp_config_t cmp_config[2] = {0};
+	pwm_cmp_config_t cmp_config = {0};
+	pwm_output_channel_t ch_config = {0};
 	HPM_PWM_BASE_TYPE *pwm_base = config->base;
-	uint32_t rld = 0, xrld = 0, prld = 0;
-	uint32_t rld_cmp = 0, xrld_cmp = 0;
-	uint16_t i, j;
+	uint32_t rld;
+	uint32_t target_cmp;
+	uint8_t cmp_index;
+	bool invert;
+	bool reinit;
+	bool first_channel;
+	bool ch_ready;
+	bool invert_changed;
+	bool need_setup;
 
-	pwm_get_default_pwm_config(pwm_base, &pwm_config);
-	if (flags == PWM_POLARITY_INVERTED) {
-		pwm_config.invert_output = true;
-	} else if (flags == PWM_POLARITY_NORMAL) {
-		pwm_config.invert_output = false;
-	} else if (flags == PWM_TRIG_ENABLE) {
-		cmp_config[0].enable_ex_cmp  = false;
-		cmp_config[0].mode = pwm_cmp_mode_output_compare;
-		cmp_config[0].cmp = period_cycles + 1;
-		cmp_config[0].update_trigger = pwm_shadow_register_update_on_hw_event;
+	if (channel >= PWM_SOC_PWM_MAX_COUNT) {
+		return -EINVAL;
+	}
 
-		cmp_config[1].mode = pwm_cmp_mode_output_compare;
-		cmp_config[1].cmp = period_cycles;
-		cmp_config[1].update_trigger = pwm_shadow_register_update_on_modify;
-		pwm_config_cmp(pwm_base, channel, &cmp_config[0]);
-		pwm_load_cmp_shadow_on_capture(pwm_base, PWM_SOC_CMP_MAX_COUNT - 1, 0);
-		pwm_config_cmp(pwm_base, PWM_SOC_CMP_MAX_COUNT - 1, &cmp_config[1]);
-	
-		pwm_start_counter(pwm_base);
-		pwm_issue_shadow_register_lock_event(pwm_base);
-		return 0;
-	} else {
+	if (period_cycles == 0U || period_cycles > 0xffffffU) {
 		return -ENOTSUP;
 	}
 
-	if (period_cycles >  0xffffff) {
-		for (i = 1; i <= 16; i++) {
-			if ((period_cycles / (i + 1)) <= 0xffffff) {
-				rld = period_cycles / (i + 1);
-				xrld = i;
-				prld = (xrld << 24) | rld;
-				for (j = 0; j <= 16; j++) {
-					if (((period_cycles - pulse_cycles) / (j + 1)) <= 0xffffff) {
-						rld_cmp = (period_cycles - pulse_cycles) / (j + 1);
-						xrld_cmp = j;
-						break;
-					} else if (j >= 16) {
-						return -ENOTSUP;
-					}
-				}
-				break;
-			} else if (i >= 16) {
-				return -ENOTSUP;
-			}
-		}
-	} else {
-		rld = period_cycles;
-		xrld = 0;
-		prld = period_cycles;
-		rld_cmp = period_cycles - pulse_cycles;
-		xrld_cmp = 0;
+	if (pulse_cycles > period_cycles) {
+		pulse_cycles = period_cycles;
 	}
 
-	if (prld != ((PWM_RLD_XRLD_GET(pwm_base->RLD) << 24) | PWM_RLD_RLD_GET(pwm_base->RLD))) {
+	invert = (flags & PWM_POLARITY_INVERTED) != 0;
 
+	rld = (period_cycles > 1U) ? (period_cycles - 1U) : period_cycles;
+
+	if (pulse_cycles == 0U) {
+		target_cmp = rld + 1U;
+	} else if (pulse_cycles >= period_cycles) {
+		target_cmp = 0U;
+	} else {
+		target_cmp = rld - (uint32_t)(((uint64_t)pulse_cycles * rld) /
+					     period_cycles);
+		if (target_cmp == rld) {
+			target_cmp = rld + 1U;
+		}
+	}
+
+	/* Period is shared; polarity is per-channel and must not force reinit. */
+	reinit = (data->channel_ready_mask != 0U) &&
+		 (data->configured_period != rld);
+	ch_ready = (data->channel_ready_mask & BIT(channel)) != 0U;
+	invert_changed = ch_ready &&
+			 (((data->invert_mask & BIT(channel)) != 0U) != invert);
+	need_setup = reinit || !ch_ready || invert_changed;
+
+	if (need_setup) {
+		first_channel = (data->channel_ready_mask == 0U) || reinit;
+
+		if (reinit || first_channel) {
+			pwm_stop_counter(pwm_base);
+			pwm_deinit(pwm_base);
+			data->channel_ready_mask = 0U;
+			data->invert_mask = 0U;
+			pwm_set_reload(pwm_base, 0, rld);
+			pwm_set_start_count(pwm_base, 0, 0);
+		}
+
+		if (invert) {
+			data->invert_mask |= BIT(channel);
+		} else {
+			data->invert_mask &= (uint8_t)~BIT(channel);
+		}
+		data->channel_ready_mask |= BIT(channel);
+		data->configured_period = rld;
+
+		cmp_index = hpmicro_pwm_v1_cmp_index(data, channel, invert);
+
+		pwm_get_default_pwm_config(pwm_base, &pwm_config);
 		pwm_config.enable_output = true;
 		pwm_config.dead_zone_in_half_cycle = config->dead_zone_in_half_cycle;
-		pwm_set_reload(pwm_base, xrld, rld);
-		pwm_set_start_count(pwm_base, 0, 0);
+		pwm_config.invert_output = invert;
 
-		cmp_config[0].enable_ex_cmp  = true;
-		cmp_config[0].mode = pwm_cmp_mode_output_compare;
-		cmp_config[0].cmp = rld + 1;
-		cmp_config[0].ex_cmp = xrld;
-		cmp_config[0].update_trigger = pwm_shadow_register_update_on_modify;
+		cmp_config.mode = pwm_cmp_mode_output_compare;
+		cmp_config.cmp = target_cmp;
+		cmp_config.enable_ex_cmp = false;
+		/* Reload-timed: both channels see the same shadow load point. */
+		cmp_config.update_trigger = pwm_shadow_register_update_on_hw_event;
 
-		cmp_config[1].enable_ex_cmp  = true;
-		cmp_config[1].mode = pwm_cmp_mode_output_compare;
-		cmp_config[1].cmp = rld;
-		cmp_config[1].ex_cmp = xrld;
-		cmp_config[1].update_trigger = pwm_shadow_register_update_on_modify;
-
-		if (status_success != pwm_setup_waveform(pwm_base, channel, &pwm_config, channel, &cmp_config[0], 1)) {
-			LOG_ERR("failed to setup waveform\n");
-			return -ENOTSUP;
+		if (pwm_setup_waveform(pwm_base, channel, &pwm_config, cmp_index,
+				       &cmp_config, 1) != status_success) {
+			LOG_ERR("failed to setup waveform ch%u", channel);
+			return -EIO;
 		}
-		pwm_load_cmp_shadow_on_capture(pwm_base, PWM_SOC_CMP_MAX_COUNT - 1, 0);
-		pwm_config_cmp(pwm_base, PWM_SOC_CMP_MAX_COUNT - 1, &cmp_config[1]);
-	
-		pwm_start_counter(pwm_base);
-		pwm_issue_shadow_register_lock_event(pwm_base);
+
+		/*
+		 * If this completes a ch0/ch1 complementary pair, retarget the
+		 * partner to CMP0 as well (shared compare → edge-locked).
+		 */
+		if (channel <= 1U) {
+			uint8_t partner = (uint8_t)(channel ^ 1U);
+
+			if ((data->channel_ready_mask & BIT(partner)) != 0U &&
+			    (((data->invert_mask & BIT(partner)) != 0U) != invert)) {
+				ch_config.cmp_start_index = 0;
+				ch_config.cmp_end_index = 0;
+				ch_config.invert_output =
+					(data->invert_mask & BIT(partner)) != 0U;
+				pwm_config_output_channel(pwm_base, partner, &ch_config);
+
+				ch_config.invert_output = invert;
+				pwm_config_output_channel(pwm_base, channel, &ch_config);
+				cmp_index = 0U;
+			}
+		}
+
+		/* CMP@reload triggers shadow load (SDK pwm_output pattern). */
+		if (first_channel) {
+			pwm_cmp_config_t trig = {0};
+
+			trig.mode = pwm_cmp_mode_output_compare;
+			trig.cmp = rld;
+			trig.update_trigger = pwm_shadow_register_update_on_modify;
+			pwm_load_cmp_shadow_on_match(pwm_base, PWM_SOC_CMP_MAX_COUNT - 1U,
+						     &trig);
+			pwm_start_counter(pwm_base);
+			pwm_issue_shadow_register_lock_event(pwm_base);
+		} else {
+			pwm_issue_shadow_register_lock_event(pwm_base);
+		}
+
+		return 0;
 	}
 
+	cmp_index = hpmicro_pwm_v1_cmp_index(data, channel, invert);
 	pwm_shadow_register_unlock(pwm_base);
-    pwm_cmp_update_cmp_value(pwm_base, channel, rld_cmp, xrld_cmp);
-	pwm_issue_shadow_register_lock_event(pwm_base);
+	pwm_cmp_update_cmp_value(pwm_base, cmp_index, target_cmp, 0);
 	return 0;
 }
 #endif /* CONFIG_DT_HAS_HPMICRO_HPM_PWM_ENABLED */
@@ -322,9 +400,7 @@ static int hpmicro_pwm_get_cycles_per_sec(const struct device *dev,
 static int pwm_hpmicro_v1_init(const struct device *dev)
 {
 	const struct pwm_hpmicro_config *config = dev->config;
-	pwm_config_t pwm_config;
-	uint32_t freqc;
-	HPM_PWM_BASE_TYPE *pwm_base = config->base;
+	struct pwm_hpmicro_data *data = dev->data;
 	int err;
 
 	err = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
@@ -340,16 +416,16 @@ static int pwm_hpmicro_v1_init(const struct device *dev)
 	 * did not. First victim: one of hs2prod's rumble motors sits on PWM1 (PWM1_P_5),
 	 * the first DT-enabled PWM outside the always-on PWM0. A gated block's
 	 * registers are not writable, so this precedes every register access.
+	 * (On HPM5151 soc.c already adds clock_pwm0..3; this is then a no-op.)
 	 */
 	clock_add_to_group((clock_name_t)config->clock_name, 0);
 
-	pwm_get_default_pwm_config(pwm_base, &pwm_config);
-	pwm_config.enable_output = true;
-    pwm_config.dead_zone_in_half_cycle = config->dead_zone_in_half_cycle;
-    pwm_config.invert_output = false;
-	freqc = clock_get_frequency(config->clock_name);
-	pwm_set_reload(pwm_base, 0, freqc / config->period);
-    pwm_set_start_count(pwm_base, 0, 0);
+	/* Reload and outputs are set up per channel in set_cycles (2026-10-12
+	 * vendor v1 rewrite); init only clears the bookkeeping.
+	 */
+	data->channel_ready_mask = 0;
+	data->configured_period = 0;
+	data->invert_mask = 0;
 
 	return 0;
 }

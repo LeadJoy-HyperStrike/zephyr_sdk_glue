@@ -1,0 +1,15 @@
+sample:
+  name: MCUboot swap smoke
+common:
+  tags: mcuboot
+  harness: console
+  harness_config:
+    type: one_line
+    regex:
+      - "Hello SLOT-.*"
+tests:
+  sample.boot.mcuboot_swap_smoke:
+    platform_allow:
+      - hpm5100evk
+    integration_platforms:
+      - hpm5100evk

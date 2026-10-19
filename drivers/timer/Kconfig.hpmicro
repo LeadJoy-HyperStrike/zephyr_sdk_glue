@@ -1,0 +1,16 @@
+# Copyright (c) 2026 HPMicro
+# SPDX-License-Identifier: Apache-2.0
+
+config HPM_PTMR_TIMER
+	bool "HPMicro PTMR as Zephyr system timer"
+	default y
+	depends on SOC_SERIES_HPM5100
+	depends on !RISCV_MACHINE_TIMER
+	select TICKLESS_CAPABLE
+	select HAS_HPMSDK_GPTMRV2
+	select TIMER_HAS_64BIT_CYCLE_COUNTER
+	help
+	  Use the PMIC-domain PTMR (GPTMRv2) as the kernel sysclock so
+	  timeouts can wake Stop. Requires &ptmr { sys-clock; } and
+	  &mtimer { status = "disabled"; }. Andes mtimer stops in Stop
+	  with the HPM5100 retention mask.

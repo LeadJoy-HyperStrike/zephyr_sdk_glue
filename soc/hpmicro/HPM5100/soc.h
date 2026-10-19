@@ -15,4 +15,14 @@
 #define RISCV_MTIME_BASE             DT_REG_ADDR_BY_IDX(DT_NODELABEL(mtimer), 0)
 #define RISCV_MTIMECMP_BASE          DT_REG_ADDR_BY_IDX(DT_NODELABEL(mtimer), 1)
 
+#ifndef _ASMLANGUAGE
+#include <stdbool.h>
+
+/**
+ * Return whether the most recent low-power exit was caused by the dedicated
+ * PDGO WKUP pin. The flag is reset before each PM state entry.
+ */
+bool hpm_pm_wakeup_from_wkup_pin(void);
+#endif
+
 #endif /* __RISCV_HPMICRO_SOC_H_ */

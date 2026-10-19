@@ -1,0 +1,14 @@
+/*
+ * Copyright 2026 HPMicro
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Board DTS already enables PWM3 + pwm-led0 (PA16). Snippet is a no-op
+ * placeholder so `-S blinky_pwm` resolves for this board.
+ */
+
+/ {
+	aliases {
+		pwm-led0 = &pwm_led0;
+		pwm-0 = &pwm3;
+	};
+};

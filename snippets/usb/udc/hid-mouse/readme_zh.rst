@@ -30,7 +30,7 @@ hid-mouse
 hpm5100evk 说明：
 
 - 使用板载 USB0 数据口；按键为 ``sw0``（左键），LED 为 ``led0``。
-- overlay 对 ``gpio_keys`` 开启 ``polling-mode``（HPM GPIO 不支持 ``GPIO_INT_EDGE_BOTH``）。
+- overlay 对 ``gpio_keys`` 走中断（HPM5151 支持 ``GPIO_INT_EDGE_BOTH``）。
 
 已知问题
 ----------

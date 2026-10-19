@@ -1,0 +1,23 @@
+/*
+ * Copyright 2026 HPMicro
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * HPM5151: kernel BSS/stacks in 128KB DLM. USB EHCI QH/QTD/framelist stay
+ * in 32KB HRAM via section ".nocache" (AHB DMA cannot use DLM).
+ */
+
+/ {
+	chosen {
+		zephyr,sram = &dlm;
+	};
+};
+
+cherryusb_usb0: &usb0 {
+	compatible = "hpmicro,hpm-cherryusb";
+	status = "okay";
+};
+
+&mcan0 {
+	status = "disabled";
+};
+

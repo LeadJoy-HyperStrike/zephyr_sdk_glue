@@ -107,21 +107,30 @@ const struct usb_descriptor cdc_descriptor = {
 
 USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t read_buffer[2][512];
 volatile uint8_t read_buffer_index;
+static volatile bool cdc_configured;
+
+bool cdc_acm_is_configured(void)
+{
+    return cdc_configured;
+}
 
 static void usbd_event_handler(uint8_t busid, uint8_t event)
 {
     switch (event) {
     case USBD_EVENT_RESET:
+        cdc_configured = false;
         break;
     case USBD_EVENT_CONNECTED:
         break;
     case USBD_EVENT_DISCONNECTED:
+        cdc_configured = false;
         break;
     case USBD_EVENT_RESUME:
         break;
     case USBD_EVENT_SUSPEND:
         break;
     case USBD_EVENT_CONFIGURED:
+        cdc_configured = true;
         /* setup first out ep read transfer */
         read_buffer_index = 0;
         usbd_ep_start_read(busid, CDC_OUT_EP, &read_buffer[0][0], usbd_get_ep_mps(busid, CDC_OUT_EP));
@@ -129,6 +138,9 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
     case USBD_EVENT_SET_REMOTE_WAKEUP:
         break;
     case USBD_EVENT_CLR_REMOTE_WAKEUP:
+        break;
+    case USBD_EVENT_DEINIT:
+        cdc_configured = false;
         break;
 
     default:

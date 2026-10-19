@@ -1,0 +1,81 @@
+/*
+ * Copyright 2026 HPMicro
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * App overlay:
+ *   PC01 / PC02 / PC04: GPIO input, pull-up, active-low
+ *   PC03: GPIO output high (3.3 V) for jumper to PC01; input-enable for DI readback
+ *
+ *   HPM pinctrl only walks groups under the first pinctrl-0 phandle, so
+ *   input and output pins must be groups of the same pinmux node.
+ *
+ * west build -b hpm5100evk <app> -- \
+ *   "-DEXTRA_DTC_OVERLAY_FILE=C:/Users/XJ0147/workspace/sdk_glue/boards/hpmicro/hpm5100evk/hpm5100evk_gpioc_in.overlay"
+ */
+
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/hpmicro-pinctrl-common.h>
+
+/ {
+	aliases {
+		sw1 = &key_pc01;
+		sw2 = &key_pc02;
+		sw4 = &key_pc04;
+		pc03 = &pc03_out;
+	};
+
+	leds {
+		pc03_out: pc03_out {
+			gpios = <&gpioc 3 GPIO_ACTIVE_HIGH>;
+			label = "PC03";
+		};
+	};
+
+	gpio_keys {
+		key_pc01: key_pc01 {
+			gpios = <&gpioc 1 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_1>;
+			label = "PC01";
+		};
+
+		key_pc02: key_pc02 {
+			gpios = <&gpioc 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_2>;
+			label = "PC02";
+		};
+
+		key_pc04: key_pc04 {
+			gpios = <&gpioc 4 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_4>;
+			label = "PC04";
+		};
+	};
+};
+
+&pinctrl {
+	pinmux_gpioc: pinmux_gpioc {
+		group_in {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 1), IOC_TYPE_IOC, 0, 0)>,
+					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 2), IOC_TYPE_IOC, 0, 0)>,
+					 <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 4), IOC_TYPE_IOC, 0, 0)>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up;
+			keeper-capability-disable;
+		};
+
+		group_out {
+			pinmux = <HPMICRO_PINMUX(HPMICRO_PIN(HPMICRO_PORTC, 3), IOC_TYPE_IOC, 0, 0)>;
+			input-enable;
+			keeper-capability-disable;
+			drive-strength = "r111";
+		};
+	};
+};
+
+&gpioc {
+	pinctrl-0 = <&pinmux_gpioc>;
+	pinctrl-names = "default";
+	status = "okay";
+};

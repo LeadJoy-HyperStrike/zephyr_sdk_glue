@@ -14,6 +14,15 @@ properties:
     interrupts:
       required: true
 
+    clk-name:
+      type: int
+      required: false
+      description: |
+        HPM SDK clock_name_t value for this DMA instance. Only read with
+        CONFIG_PM_DEVICE (the PM action gates this clock), which then
+        requires it; hpm6exx.dtsi and the other pre-HPM5100 SoC trees do
+        not carry it.
+
     dma-channels:
       required: true
 

@@ -8,7 +8,7 @@
 
 ########################################
 ##  zephyr                    v3.7.0  ##
-##  hpm_sdk                   v1.11.0 ##
+##  hpm_sdk                   v1.12.1 ##
 ########################################
 manifest:
   version: "1.0"
@@ -44,6 +44,10 @@ manifest:
       #   hpm_sdk/soc/HPM5100/**、hpm_sdk/boards/hpm5100evk/**、
       #   hpm_sdk/boards/openocd/{hpm5100_all_in_one.cfg,soc/hpm5100.cfg,boards/hpm5100evk.cfg}
       # 并跑 `west supply` 打 scripts/patch/hpm_sdk_v1.12.1/ 下的必需补丁。
+      # 先楫 2026-10-12 的投放改成 v1.11.0 + 一个本地提交(tag v1.11.0-hpm5100,未推),
+      # 这里不跟:它的 soc/HPM5100 与上面这份叠加 89/90 逐字节相同(唯一差别是
+      # HPM5151/CMakeLists.txt 删了 v1.11 没有的 sdk_check_enabled_fpu),给 v1.11
+      # 回移的 GPTMRV2 / DHC / USB SUTW·SLOM / PCFG NO_DCDC 在 v1.12.1 里本来就有。
       revision: v1.12.1
       submodules: true
     - name: canopennode
