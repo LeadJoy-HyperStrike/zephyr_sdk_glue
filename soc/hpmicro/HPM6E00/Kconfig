@@ -141,20 +141,24 @@ config HPM_SOC_VDD_SOC_EXTERNAL
 		populates NO inductor on DCDC_LP.
 
 		What it changes: soc_init_clock() stops calling
-		pcfg_dcdc_set_voltage(). That call is NOT optional politeness
-		on such a board, it is fatal. Both of its branches end in
+		pcfg_dcdc_set_voltage(). That call must not run on such a
+		board. Up to hpm_sdk v1.12.1 both of its branches ended in
 
 		    while (!pcfg_dcdc_is_stable(ptr)) { NOP(); }
 
 		(hpm_pcfg_drv.c: switch_to_dcm_mode and
 		set_voltage_ccm_mode) with no timeout and no escape. With no
 		inductor the converter can never reach its regulation point,
-		so the loop never exits. soc_init_clock() runs inside
-		irq_lock() and BEFORE the console is up, so the failure is
+		so the loop never exited. soc_init_clock() runs inside
+		irq_lock() and BEFORE the console is up, so the failure was
 		mute: no banner, no USB, no shell -- indistinguishable from a
 		dead part or a bad flash image. Diagnosed on PS4_V0B
 		(2026-08-20) after the BootROM ISP kept enumerating fine while
 		every image we built hung; ROM never touches PCFG.
+		hpm_sdk v1.13.0 bounds those waits (DCDC_STABLE_TIMEOUT polls
+		each) and then carries on silently: leaving this off on such
+		a board now costs a busy-wait at every boot and a DCDC left
+		half-reconfigured instead of a hang -- still wrong.
 
 		The frequency ceiling becomes a HARDWARE property once this is
 		set. VDD_SOC is whatever the external regulator produces and

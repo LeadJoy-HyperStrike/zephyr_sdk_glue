@@ -44,6 +44,10 @@ manifest:
       # 打 scripts/patch/hpm_sdk_v1.13.0/ 下的必需补丁。
       # 相对 ER 包,官方版去掉了 HPM5151 的 EFC / DHC(DMAMUX 源 61 -> 58 路);
       # 先楫 2026-10-12 投放里那份 v1.11.0-hpm5100 本地提交不跟。
+      # 从「v1.12.1 + ER 叠加」的旧工作区迁过来:west update 会因那些 untracked /
+      # 改过的文件拒绝 checkout。先 `git -C sdk_env clean -n -d` 确认列出的只有
+      # HPM5100 叠加,再 `clean -f -d` 并 `git -C sdk_env checkout -- .`,
+      # 然后 west update、west supply。
       revision: v1.13.0
       submodules: true
     - name: canopennode

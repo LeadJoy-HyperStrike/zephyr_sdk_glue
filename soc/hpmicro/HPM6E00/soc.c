@@ -216,12 +216,14 @@ static void soc_init_clock(void)
      */
     /*
      * Skipped when VDD_SOC comes from an external regulator: with no
-     * inductor on DCDC_LP this call HANGS. Both branches of
-     * pcfg_dcdc_set_voltage() end in `while (!pcfg_dcdc_is_stable())`
-     * with no timeout, and a converter that cannot regulate never gets
-     * there. We are inside irq_lock() and ahead of console init, so the
-     * hang is completely mute -- that is exactly how PS4_V0B presented
-     * (BootROM ISP fine, every image of ours dead).
+     * inductor on DCDC_LP the converter can never regulate. Up to
+     * hpm_sdk v1.12.1 both branches of pcfg_dcdc_set_voltage() ended in
+     * `while (!pcfg_dcdc_is_stable())` with no timeout, so this call
+     * HUNG -- inside irq_lock() and ahead of console init, completely
+     * mute; that is exactly how PS4_V0B presented (BootROM ISP fine,
+     * every image of ours dead). v1.13.0 gives up after
+     * DCDC_STABLE_TIMEOUT polls and carries on silently instead, which
+     * is still no reason to call it on such a board.
      */
 #if !defined(CONFIG_HPM_SOC_VDD_SOC_EXTERNAL)
     pcfg_dcdc_set_voltage(HPM_PCFG, 1275);
