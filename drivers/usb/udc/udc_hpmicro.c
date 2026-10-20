@@ -1181,8 +1181,8 @@ static int udc_hpm_init(const struct device *dev)
 	 * MUST NOT run on HS2/HPM6E00: usb_phy_using_internal_vbus() makes the
 	 * PHY ignore the VBUS pin, which kills the VBUS-removed/URE bus-death
 	 * detection the fastpath kill switch (cec27c0) and the auto-disconnect
-	 * sleep design rely on; the 100 ms busy-wait would also stall boot of
-	 * both the app and the MCUboot recovery image.
+	 * sleep design rely on; the 100 ms busy-wait would also stall every
+	 * boot.
 	 */
 	usb_hcd_set_power_ctrl_polarity(config->base, true);
 	k_busy_wait(100 * 1000);

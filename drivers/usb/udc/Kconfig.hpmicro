@@ -13,8 +13,8 @@ config UDC_HPMICRO
 	# stack (any plain sample on these boards) sets UDC_HPMICRO=y and dies at
 	# CMake configure time with "Cannot specify sources for target
 	# drivers__usb__udc which is not built by this project" instead of
-	# quietly building nothing. No-op for HS2: both the app and the MCUboot
-	# recovery image enable the next USB device stack.
+	# quietly building nothing. No-op for HS2: the app enables the next USB
+	# device stack.
 	depends on UDC_DRIVER
 	select HAS_HPMSDK_USB
 	select NOCACHE_MEMORY if ARCH_HAS_NOCACHE_MEMORY_SUPPORT

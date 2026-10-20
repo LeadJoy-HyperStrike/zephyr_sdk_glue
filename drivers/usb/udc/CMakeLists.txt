@@ -9,8 +9,7 @@ if(CONFIG_UDC_HPMICRO)
   if(CONFIG_SOC_SERIES_HPM5100)
     # HPM5100 only, and it MUST stay gated: the -D overrides the #ifndef
     # default (8) in every SoC's hpm_soc_feature.h, so an ungated one would
-    # shrink the HPM6E80 QTD pool from 256 to 64 in both the app and the
-    # MCUboot recovery image.
+    # shrink the HPM6E80 QTD pool from 256 to 64 in the HS2 app.
     # HPM5100 HRAM is 32KB. Default 8 QTDs/EP * 16 EP * 2 dir ≈ 8KB QTDs.
     # CDC only needs short control/bulk chains; 2 QTDs/EP frees ~6KB.
     #

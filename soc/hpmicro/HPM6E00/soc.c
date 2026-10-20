@@ -31,7 +31,7 @@
  * 5 = 100 MHz, not 7 = 133 MHz. 133 is out of spec for both parts this SoC
  * ships against -- GD25Q32EWIG allows 104 MHz at DC=0 (datasheet table 8),
  * MX25L12833F only 84 -- and HPMicro's own EVK ships freq_opt 5. Running the
- * ROM's load of MCUboot out of spec is marginal rather than reliably broken,
+ * ROM's own image load out of spec is marginal rather than reliably broken,
  * so it shows up as one board booting and the next dropping into the BootROM
  * (observed 2026-09-02 on an hs2prod with the GD part). Keep this in step
  * with hs2prod.dts's nor-cfg-opt-opt0.
@@ -199,13 +199,13 @@ static void soc_init_clock(void)
      *
      * ORDERING RULE, and it is directional: raising the frequency needs the
      * voltage up FIRST, lowering it needs the voltage down LAST. Neither
-     * single placement is safe on its own, because this function runs from
-     * two different entry states -- cold boot from the BootROM (CPU at 24 MHz
-     * or the preset value, DCDC at its reset default) and warm chainload from
-     * MCUboot (CPU already at whatever MCUboot set). An earlier version set
-     * the target voltage here, before the PLL retune, which clocked the cores
-     * at MCUboot's 600 MHz on the 400 MHz bin's 1.075 V -- outside every row
-     * of table 12.
+     * single placement is safe on its own, because this function can run from
+     * two entry states -- cold boot from the BootROM (CPU at 24 MHz or the
+     * preset value, DCDC at its reset default) and warm chainload from a
+     * bootloader (CPU wherever it left it; HS2 chainloaded from MCUboot until
+     * 2026-09-02). An earlier version set the target voltage here, before the
+     * PLL retune, which clocked the cores at MCUboot's 600 MHz on the 400 MHz
+     * bin's 1.075 V -- outside every row of table 12.
      *
      * So: park at the 600 MHz voltage across the transition (safe for any
      * frequency this SoC supports), then settle to the target bin once the
@@ -267,7 +267,7 @@ static void soc_init_clock(void)
      * This runs unconditionally, including for the 600 MHz default where it
      * resolves to post-divider 1.0. Skipping it there would make the default
      * build mean "leave whatever the previous image set", and the previous
-     * image is not always the BootROM: MCUboot and the application carry
+     * image need not be the BootROM: a bootloader and the application carry
      * this option independently, so a 375 MHz bootloader chainloading a
      * 600 MHz application would leave the cores at 375 while the application
      * raised VDD_SOC to the 600 MHz bin -- not dangerous, but silently wrong
