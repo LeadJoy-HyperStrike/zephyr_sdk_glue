@@ -33,7 +33,8 @@
  *
  * ---------------------------------------------------------------------------
  * IN USE -- these must never appear here:
- *   adc0-3, i2c0 (touchpad), spi1 (WS2812), spi7 (BMI423 IMU), uart0
+ *   adc0-3, i2c0 (touchpad), spi1 (WS2812), spi7 (legacy BMI423 IMU), uart0
+ *   spi2 (V0E BMI423 on PC26/PC28/PC29; enabled in hs2prod.overlay),
  *   (console/shell), usb0, pwm0 (ADC TRGO), pwm1 (hs2prod left motor, DRV8833
  *   IN1 on PWM1_P_5 -- added 2026-08-26 by module 10, AFTER this list was
  *   written; it sat here gated until the 2026-09-02 review), emds
@@ -101,7 +102,7 @@
 	X(uart6) X(uart7) X(uart8) X(uart9) X(uart10) \
 	X(uart11) X(uart12) X(uart13) X(uart14) X(uart15) \
 	X(i2c1) X(i2c2) X(i2c3) X(i2c4) X(i2c5) X(i2c6) X(i2c7) \
-	X(spi0) X(spi2) X(spi3) X(spi4) X(spi5) X(spi6) \
+	X(spi0) X(spi3) X(spi4) X(spi5) X(spi6) \
 	X(gptmr2) X(gptmr3) X(gptmr4) X(gptmr5) X(gptmr6) X(gptmr7) \
 	X(acmp0) X(acmp1) X(acmp2) X(acmp3) \
 	X(i2s0) X(i2s1) X(dao) X(pdm) \
