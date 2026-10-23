@@ -73,6 +73,43 @@ struct stream {
 };
 #endif
 
+/* Shared by both halves of this file (the HPM5100 vendor branch below and
+ * the HS2 branch after #else). Zephyr's frequency is an upper bound. The SDK timing initializer only
+ * accepts exact integer ratios, so asking for e.g. 3.125 MHz from 80 MHz
+ * otherwise fails without programming TIMING. Select the nearest supported
+ * rate at or below the request, including fractional-Hz hardware rates.
+ * Exact ratios (e.g. the BMI423's 80 / 8 = 10 MHz) keep the same register. */
+static int spi_hpm_master_timing_init(SPI_Type *base,
+				    const spi_timing_config_t *timing)
+{
+	uint32_t source_hz = timing->master_config.clk_src_freq_in_hz;
+	uint32_t requested_hz = timing->master_config.sclk_freq_in_hz;
+	uint32_t divider = 1U;
+	spi_timing_config_t hw_timing = *timing;
+
+	if (source_hz == 0U || requested_hz == 0U) {
+		return -EINVAL;
+	}
+	if (requested_hz < source_hz) {
+		divider = (source_hz - 1U) / requested_hz + 1U;
+		if (divider > 510U) {
+			return -EINVAL;
+		}
+		divider += divider & 1U;
+	}
+
+	/* Use the SDK for CS timing, then its divider setter for the exact
+	 * register ratio. 0xff is bypass; 0..0xfe mean 2..510. */
+	hw_timing.master_config.sclk_freq_in_hz = source_hz;
+	if (spi_master_timing_init(base, &hw_timing) != status_success) {
+		return -EINVAL;
+	}
+	if (divider != 1U) {
+		spi_master_set_sclk_div(base, (divider / 2U) - 1U);
+	}
+	return 0;
+}
+
 #if defined(CONFIG_SOC_SERIES_HPM5100)
 
 struct spi_hpm_data {
@@ -555,7 +592,20 @@ static int spi_hpm_configure(const struct device *dev,
 		timing_config.master_config.sclk_freq_in_hz = spi_cfg->frequency;
 		timing_config.master_config.cs2sclk = config->cs2sclk;
 		timing_config.master_config.csht = config->csht;
-		spi_master_timing_init(base, &timing_config);
+		/* The vendor branch called spi_master_timing_init() directly and
+		 * ignored its status: any request that is not an exact even
+		 * divisor of the source (the WS2812's ~3.1 MHz of 80 MHz) left
+		 * TIMING unprogrammed and the bus at whatever rate it had. */
+		{
+			int terr = spi_hpm_master_timing_init(base, &timing_config);
+
+			if (terr != 0) {
+				LOG_ERR("SCLK %u Hz not reachable from %u Hz",
+					spi_cfg->frequency,
+					timing_config.master_config.clk_src_freq_in_hz);
+				return terr;
+			}
+		}
 
 		spi_master_get_default_format_config(&format_config);
 		format_config.common_config.mode = spi_master_mode;
@@ -1287,42 +1337,6 @@ static void spi_hpm_master_transfer_callback(SPI_Type *base, void *userData)
 	spi_context_update_rx(&data->ctx, 1, data->transfer_len);
 
 	spi_hpm_transfer_next_packet(data->dev);
-}
-
-/* Zephyr's frequency is an upper bound. The SDK timing initializer only
- * accepts exact integer ratios, so asking for e.g. 3.125 MHz from 80 MHz
- * otherwise fails without programming TIMING. Select the nearest supported
- * rate at or below the request, including fractional-Hz hardware rates.
- * Exact ratios (e.g. the BMI423's 80 / 8 = 10 MHz) keep the same register. */
-static int spi_hpm_master_timing_init(SPI_Type *base,
-				    const spi_timing_config_t *timing)
-{
-	uint32_t source_hz = timing->master_config.clk_src_freq_in_hz;
-	uint32_t requested_hz = timing->master_config.sclk_freq_in_hz;
-	uint32_t divider = 1U;
-	spi_timing_config_t hw_timing = *timing;
-
-	if (source_hz == 0U || requested_hz == 0U) {
-		return -EINVAL;
-	}
-	if (requested_hz < source_hz) {
-		divider = (source_hz - 1U) / requested_hz + 1U;
-		if (divider > 510U) {
-			return -EINVAL;
-		}
-		divider += divider & 1U;
-	}
-
-	/* Use the SDK for CS timing, then its divider setter for the exact
-	 * register ratio. 0xff is bypass; 0..0xfe mean 2..510. */
-	hw_timing.master_config.sclk_freq_in_hz = source_hz;
-	if (spi_master_timing_init(base, &hw_timing) != status_success) {
-		return -EINVAL;
-	}
-	if (divider != 1U) {
-		spi_master_set_sclk_div(base, (divider / 2U) - 1U);
-	}
-	return 0;
 }
 
 static int spi_hpm_configure(const struct device *dev,
