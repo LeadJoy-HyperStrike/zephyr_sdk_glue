@@ -208,10 +208,29 @@ FUNC_NORETURN void z_sys_poweroff(void)
 }
 
 #if !defined(CONFIG_PM)
+/*
+ * CONFIG_SOC_HPM5100_CPU_IDLE_WAIT=n: WFI with the CPU clock left running
+ * (cpu_lp_mode_ungate_cpu_clock), for boards whose timing cannot take the
+ * wake-up of a gated core. The SDK keeps the clock on for its own reason in
+ * board_ungate_mchtmr_at_lp_mode() - "so that mchtmr irq can still work
+ * after wfi" - and Zephyr's system tick is that machine timer. The entry
+ * sequence is hpm5100_enter_wait()'s minus the gating.
+ */
+static inline void hpm5100_idle(void)
+{
+#if defined(CONFIG_SOC_HPM5100_CPU_IDLE_WAIT)
+	hpm5100_enter_wait();
+#else
+	sysctl_set_cpu0_lp_mode(HPM_SYSCTL, cpu_lp_mode_ungate_cpu_clock);
+	irq_unlock(MSTATUS_IEN);
+	__asm__ volatile("wfi");
+#endif
+}
+
 void arch_cpu_idle(void)
 {
 	sys_trace_idle();
-	hpm5100_enter_wait();
+	hpm5100_idle();
 	hpm5100_exit_low_power();
 	irq_unlock(MSTATUS_IEN);
 }
@@ -219,7 +238,7 @@ void arch_cpu_idle(void)
 void arch_cpu_atomic_idle(unsigned int key)
 {
 	sys_trace_idle();
-	hpm5100_enter_wait();
+	hpm5100_idle();
 	hpm5100_exit_low_power();
 	irq_unlock(key);
 }

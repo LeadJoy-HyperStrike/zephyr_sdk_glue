@@ -100,6 +100,8 @@ config SOC_HPM5100_CPU_IDLE_WAIT
 	help
 		When enabled, arch_cpu_idle() sets sysctl CPU0 low-power mode to
 		gate the CPU clock before executing WFI, matching the HPM SDK
-		Wait mode entry path.
+		Wait mode entry path. When disabled, WFI runs with the CPU clock
+		ungated (the SDK's board_ungate_mchtmr_at_lp_mode()). Only the
+		CONFIG_PM=n idle path reads it.
 
 endif # SOC_SERIES_HPM5100
