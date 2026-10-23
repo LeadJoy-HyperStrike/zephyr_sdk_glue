@@ -77,6 +77,7 @@ struct stream {
 
 struct spi_hpm_data {
 	const struct device *dev;
+	bool config_valid;
 	spi_control_config_t control_config;
 	struct spi_context ctx;
 	size_t transfer_len;
@@ -343,6 +344,10 @@ static void spi_hpm_transfer_next_packet(const struct device *dev)
 
 		if (stat != status_success) {
 			LOG_ERR("Transfer failed");
+			/* Polling has no IRQ to complete a failed request. Preserve the
+			 * real error; the synchronous caller then performs bounded cleanup. */
+			spi_context_complete(&data->ctx, dev,
+				stat == status_timeout ? -ETIMEDOUT : -EIO);
 			return;
 		}
 
@@ -529,13 +534,14 @@ static int spi_hpm_configure(const struct device *dev,
 	uint32_t word_size;
 	bool slave;
 
-	if (spi_context_configured(&data->ctx, spi_cfg)) {
+	if (data->config_valid && spi_context_configured(&data->ctx, spi_cfg)) {
 		/* This configuration is already in use */
 		return 0;
 	}
+	data->config_valid = false;
 
 	word_size = SPI_WORD_SIZE_GET(spi_cfg->operation);
-	if (word_size > MAX_DATA_WIDTH) {
+	if (word_size == 0U || word_size > MAX_DATA_WIDTH) {
 		LOG_ERR("Word size %d is greater than %d",
 			    word_size, MAX_DATA_WIDTH);
 		return -EINVAL;
@@ -552,10 +558,15 @@ static int spi_hpm_configure(const struct device *dev,
 		/* Master drives SCLK — program divider from spi_cfg->frequency. */
 		timing_config.master_config.clk_src_freq_in_hz =
 			clock_get_frequency(config->clock_name);
+		if (!timing_config.master_config.clk_src_freq_in_hz || !spi_cfg->frequency) {
+			return -EINVAL;
+		}
 		timing_config.master_config.sclk_freq_in_hz = spi_cfg->frequency;
 		timing_config.master_config.cs2sclk = config->cs2sclk;
 		timing_config.master_config.csht = config->csht;
-		spi_master_timing_init(base, &timing_config);
+		if (spi_master_timing_init(base, &timing_config) != status_success) {
+			return -EINVAL; /* Never transmit using a stale/reset divider. */
+		}
 
 		spi_master_get_default_format_config(&format_config);
 		format_config.common_config.mode = spi_master_mode;
@@ -581,6 +592,7 @@ static int spi_hpm_configure(const struct device *dev,
 	spi_format_init(base, &format_config);
 
 	data->ctx.config = spi_cfg;
+	data->config_valid = true;
 
 	return 0;
 }
@@ -897,7 +909,9 @@ static int transceive_dma(const struct device *dev,
 
 	ret = spi_hpm_configure(dev, spi_cfg);
 	if (ret) {
-		goto out;
+		/* First failed configure can leave ctx.config NULL. */
+		spi_context_unlock_unconditionally(&data->ctx);
+		return ret;
 	}
 
 	spi_context_buffers_setup(&data->ctx, tx_bufs, rx_bufs, 1);
@@ -976,7 +990,8 @@ static int transceive(const struct device *dev,
 
 	ret = spi_hpm_configure(dev, spi_cfg);
 	if (ret) {
-		goto out;
+		spi_context_unlock_unconditionally(&data->ctx);
+		return ret;
 	}
 
 	spi_context_buffers_setup(&data->ctx, tx_bufs, rx_bufs, 1);
@@ -988,7 +1003,20 @@ static int transceive(const struct device *dev,
 	spi_hpm_transfer_next_packet(dev);
 
 	ret = spi_context_wait_for_completion(&data->ctx);
-out:
+#if !defined(CONFIG_SPI_HPM_INTERRUPT)
+	if (ret < 0) {
+		const struct spi_hpm_config *config = dev->config;
+		SPI_Type *base = config->base;
+		/* Bounded polling cleanup: release CS and stale FIFO/context state. */
+		spi_disable_interrupt(base, 0xffffffffu);
+		_spi_context_cs_control(&data->ctx, false, true);
+		base->CTRL |= spi_reset_all;
+		(void)spi_poll_reset_complete(base, spi_reset_all, 5000u);
+		spi_clear_interrupt_status(base, spi_get_interrupt_status(base));
+		data->config_valid = false;
+		k_sem_reset(&data->ctx.sync);
+	}
+#endif
 	spi_context_release(&data->ctx, ret);
 
 	return ret;
@@ -1805,7 +1833,10 @@ static int spi_hpm_init(const struct device *dev)
 		return err;
 	}
 
-	clock_set_source_divider(config->clock_name, config->clock_src, config->clock_div);
+	if (clock_set_source_divider(config->clock_name, config->clock_src,
+				    config->clock_div) != status_success) {
+		return -EINVAL;
+	}
 	clock_add_to_group(config->clock_name, 0);
 
 	spi_context_unlock_unconditionally(&data->ctx);

@@ -507,8 +507,12 @@ static int uart_hpm_poll_in(const struct device *dev, unsigned char *c)
 {
 	const struct uart_hpm_cfg *const cfg = dev->config;
 
-	if (status_success != uart_receive_byte((UART_Type *)cfg->base, c)) {
-		return 1;
+	/* Zephyr poll_in must return immediately when RX is empty. The SDK's
+	 * uart_receive_byte retries 5000 times: calling it from a fast input
+	 * task stalls every sample even when no serial command was sent.
+	 * Keep the blocking SDK API for callers that explicitly want a wait. */
+	if (status_success != uart_try_receive_byte((UART_Type *)cfg->base, c)) {
+		return -1;
 	} else {
 		return 0;
 	}

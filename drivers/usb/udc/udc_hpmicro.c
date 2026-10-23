@@ -27,6 +27,10 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(udc_hpmicro, CONFIG_UDC_DRIVER_LOG_LEVEL);
 
+#if defined(CONFIG_HS2_HPM51_FAST) && defined(CONFIG_UDC_HPM_FASTPATH)
+#error "HPM51 single-core and HPM6E dual-core fast paths cannot own the same endpoint"
+#endif
+
 /*
  * There is no real advantage to change control endpoint size
  * but we can use it for testing UDC driver API and higher layers.
@@ -86,6 +90,91 @@ struct udc_hpm_data {
 	bool pm_deep_locked;
 #endif
 };
+
+#if defined(CONFIG_HS2_HPM51_FAST)
+#include <drivers/usb/udc_hpm51_fast.h>
+#include <stddef.h>
+BUILD_ASSERT(sizeof(dcd_qhd_t)==64 && sizeof(dcd_qtd_t)==32);
+BUILD_ASSERT(offsetof(dcd_qhd_t,qtd_overlay)==8);
+BUILD_ASSERT(offsetof(dcd_qhd_t,attached_buffer)==48);
+BUILD_ASSERT(offsetof(dcd_qhd_t,attached_qtd)==52);
+BUILD_ASSERT(offsetof(USB_Type,ENDPTPRIME)==0x1b0 && offsetof(USB_Type,ENDPTCOMPLETE)==0x1bc);
+static struct {uint8_t ep;bool allowed;udc_hpm51_fast_cb cb;void *ctx;USB_Type *regs;} fast51;
+#if defined(CONFIG_HS2_HPM51_METRICS)
+static uint32_t fast51_irq_metrics[4]; /* count/max, normal count/max tail */
+void udc_hpm51_metrics_snapshot(uint32_t out[4])
+{unsigned key=irq_lock();memcpy(out,fast51_irq_metrics,sizeof(fast51_irq_metrics));irq_unlock(key);}
+#endif
+int udc_hpm51_fast_claim(const struct device *dev,uint8_t ep,udc_hpm51_fast_cb cb,
+	void *ctx,struct udc_hpm51_fast_view *view)
+{
+	struct udc_hpm_data *priv=udc_get_private(dev);
+	struct udc_ep_config *cfg=udc_get_ep_cfg(dev,ep);
+	unsigned key=irq_lock();int rc=0;
+	uint32_t bit=1u<<(16+(ep&15));unsigned idx=2*(ep&15)+1;
+	if(!(ep&0x80) || !(ep&15) || !cfg || !cfg->stat.enabled || !cb || !view)rc=-EINVAL;
+	else if(!udc_is_initialized(dev) || !udc_is_enabled(dev) || udc_is_suspended(dev) ||
+	        usb_device_get_suspend_status(&priv->handle) || !usb_device_get_port_ccs(&priv->handle))rc=-EAGAIN;
+	else if(fast51.ep || udc_ep_is_busy(dev,ep) || !k_fifo_is_empty(&cfg->fifo))rc=-EBUSY;
+	else if((priv->handle.regs->ENDPTPRIME|priv->handle.regs->ENDPTSTAT)&bit)rc=-EBUSY;
+	else {
+		priv->handle.regs->ENDPTCOMPLETE=bit;
+		priv->handle.regs->ENDPTNAK=bit;
+		priv->handle.regs->ENDPTNAKEN|=bit;
+		priv->handle.regs->USBINTR|=USB_USBINTR_NAKE_MASK;
+		view->regs=(uintptr_t)priv->handle.regs;
+		view->qhd=(uintptr_t)&priv->handle.dcd_data->qhd[idx];
+		view->qtd=(uintptr_t)&priv->handle.dcd_data->qtd[idx*USB_SOC_DCD_QTD_COUNT_EACH_ENDPOINT];
+		fast51.ep=ep;fast51.cb=cb;fast51.ctx=ctx;fast51.regs=priv->handle.regs;fast51.allowed=true;
+	}
+	irq_unlock(key);return rc;
+}
+void udc_hpm51_fast_release(const struct device *dev)
+{
+	struct udc_hpm_data *priv=udc_get_private(dev);unsigned key=irq_lock();
+	if(fast51.ep)priv->handle.regs->ENDPTNAKEN&=~(1u<<(16+(fast51.ep&15)));
+	if(!priv->handle.regs->ENDPTNAKEN)priv->handle.regs->USBINTR&=~USB_USBINTR_NAKE_MASK;
+	fast51.allowed=false;fast51.ep=0;fast51.cb=NULL;irq_unlock(key);
+}
+bool udc_hpm51_fast_allowed(void) {return fast51.allowed;}
+#if defined(CONFIG_HS2_HPM51_IMU_PRIORITY)
+void udc_hpm51_fast_set_callback(udc_hpm51_fast_cb callback)
+{unsigned key=irq_lock();if(fast51.ep&&callback)fast51.cb=callback;irq_unlock(key);}
+#endif
+void udc_hpm51_fast_nak_enable(bool enable)
+{
+	if(!fast51.ep || !fast51.regs)return;
+	uint32_t bit=1u<<(16+(fast51.ep&15));fast51.regs->ENDPTNAK=bit;
+	if(enable)fast51.regs->ENDPTNAKEN|=bit;else fast51.regs->ENDPTNAKEN&=~bit;
+}
+static void fast51_dead(void)
+{
+	fast51.allowed=false;
+	if(fast51.ep && fast51.regs) {
+		uint32_t bit=1u<<(16+(fast51.ep&15));
+		fast51.regs->ENDPTNAKEN&=~bit;fast51.regs->ENDPTNAK=bit;
+	}
+	if(fast51.cb)fast51.cb(fast51.ctx,true,*(volatile uint32_t *)(uintptr_t)HPM_MCHTMR);
+}
+#endif
+
+#if defined(CONFIG_HS2_SINGLECORE)
+/* HID's zero-copy API may hand us DLM or XIP buffers, unlike XUSB's UDC
+ * allocation. Only HRAM is DMA-visible on HPM5151. One bounded IN staging
+ * slot per used endpoint is safe because the driver admits one transfer
+ * per endpoint. Normal already-HRAM packets incur no extra copy. */
+static uint8_t hpm51_bounce[6][512]
+	__attribute__((section(".hs2_usb_bounce"),aligned(64)));
+static uint8_t *hpm51_in_buffer(uint8_t ep,uint8_t *data,uint32_t len)
+{
+	uintptr_t addr=(uintptr_t)data;
+	if(len==0 || (addr>=0xf0200000u && addr<=0xf0208000u && len<=0xf0208000u-addr))return data;
+	unsigned n=ep&0xfu;
+	if(n>=6 || len>sizeof(hpm51_bounce[0]))return NULL;
+	memcpy(hpm51_bounce[n],data,len);
+	return hpm51_bounce[n];
+}
+#endif
 
 /*
  * USB PHY / QTD state does not survive SoC Stop. Block idle Stop/soft-off
@@ -441,6 +530,14 @@ static int udc_hpm_ep_feed(const struct device *dev,
 #else
 			data = net_buf_tail(buf);
 #endif
+#if defined(CONFIG_HS2_SINGLECORE)
+			/* HID owns fixed OUT pools separately from UDC. Never silently
+			 * prime an unreachable DLM pointer if a class misses placement. */
+			uintptr_t addr=(uintptr_t)data;
+			if(len && !(addr>=0xf0200000u && addr<=0xf0208000u && len<=0xf0208000u-addr)) {
+				status=false;goto feed_done;
+			}
+#endif
 			status = usb_device_edpt_xfer(handle, cfg->addr, data, len);
 		} else {
 			len = buf->len;
@@ -452,6 +549,11 @@ static int udc_hpm_ep_feed(const struct device *dev,
 			memcpy(data, buf->data, len);
 #else
 			data = buf->data;
+#endif
+#if defined(CONFIG_HS2_SINGLECORE)
+			data=hpm51_in_buffer(cfg->addr,data,len);
+			if(len && !data) {status=false;goto feed_done;}
+			__asm__ volatile("fence rw,rw" ::: "memory");
 #endif
 			status = usb_device_edpt_xfer(handle, cfg->addr, data, len);
 #if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
@@ -481,6 +583,9 @@ static int udc_hpm_ep_feed(const struct device *dev,
 #endif
 		}
 
+#if defined(CONFIG_HS2_SINGLECORE)
+feed_done:
+#endif
 		key = irq_lock();
 		if (!status) {
 			udc_ep_set_busy(dev, cfg->addr, false);
@@ -792,6 +897,12 @@ static int udc_hpm_handler_in(const struct device *dev, uint8_t ep,
 
 static void udc_hpm_isr(const struct device *dev)
 {
+#if defined(CONFIG_HS2_HPM51_FAST)
+	const uint32_t irq_entry_tick=*(volatile uint32_t *)(uintptr_t)HPM_MCHTMR;
+#endif
+#if defined(CONFIG_HS2_HPM51_METRICS)
+	uint32_t normal_started=0;fast51_irq_metrics[0]++;
+#endif
 	struct udc_hpm_data *priv = udc_get_private(dev);
 	usb_device_handle_t *handle = &priv->handle;
 	uint32_t int_status;
@@ -829,6 +940,13 @@ static void udc_hpm_isr(const struct device *dev)
 			fastpath.bus_cb(fastpath.bus_ctx);
 		}
 #endif
+#if defined(CONFIG_HS2_SINGLECORE)
+		udc_set_suspended(dev,false);
+#endif
+#if defined(CONFIG_HS2_HPM51_FAST)
+		fast51_dead(); /* stop deadline producer before resetting QH/DMA */
+#endif
+
 		/* Prime EP0 QH first, then re-open EP0 like other Zephyr UDC drivers. */
 		usb_device_bus_reset(handle, USB_HPM_EP0_SIZE);
 		cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
@@ -870,6 +988,9 @@ static void udc_hpm_isr(const struct device *dev)
 		/* Match CherryUSB: ignore early suspend before SET_ADDRESS. */
 		if (usb_device_get_suspend_status(handle) &&
 		    usb_device_get_address(handle)) {
+#if defined(CONFIG_HS2_HPM51_FAST)
+			fast51_dead();
+#endif
 			udc_set_suspended(dev, true);
 			udc_submit_event(dev, UDC_EVT_SUSPEND, 0);
 		}
@@ -883,6 +1004,9 @@ static void udc_hpm_isr(const struct device *dev)
 				fastpath.bus_cb(fastpath.bus_ctx);
 			}
 #endif
+#if defined(CONFIG_HS2_HPM51_FAST)
+			fast51_dead();
+#endif
 			udc_submit_event(dev, UDC_EVT_VBUS_REMOVED, 0);
 		} else {
 			udc_set_suspended(dev, false);
@@ -891,15 +1015,32 @@ static void udc_hpm_isr(const struct device *dev)
 		}
 	}
 
+#if defined(CONFIG_HS2_HPM51_FAST)
+	if((int_status&USB_USBINTR_NAKE_MASK) && fast51.allowed && fast51.cb)
+		fast51.cb(fast51.ctx,false,irq_entry_tick);
+#endif
 	if (int_status & USB_USBINTR_UE_MASK) {
 		uint32_t edpt_complete = usb_device_get_edpt_complete_status(handle);
 		uint32_t const edpt_setup_status = usb_device_get_setup_status(handle);
+#if defined(CONFIG_HS2_HPM51_FAST)
+		if(fast51.ep) {
+			uint32_t bit=1u<<(16+(fast51.ep&15));
+			if((edpt_complete&bit) && fast51.allowed && fast51.cb)fast51.cb(fast51.ctx,false,irq_entry_tick);
+			edpt_complete&=~bit; /* exclusive owner consumes only its W1C bit */
+		}
+#endif
 
 #if defined(CONFIG_UDC_HPM_FASTPATH)
 		/* Bits owned by the CPU1 engine: neither processed nor
 		 * cleared here - core1 polls ENDPTCOMPLETE and W1C-clears
 		 * its own bit (RM 64.6.25: per-bit RWC). */
 		edpt_complete &= ~fastpath.masked_complete;
+#endif
+#if defined(CONFIG_HS2_HPM51_METRICS)
+		if(edpt_complete || edpt_setup_status) {
+			normal_started=*(volatile uint32_t *)(uintptr_t)HPM_MCHTMR;
+			fast51_irq_metrics[2]++;
+		}
 #endif
 		if (edpt_complete) {
 			usb_device_clear_edpt_complete_status(handle, edpt_complete);
@@ -1000,6 +1141,13 @@ static void udc_hpm_isr(const struct device *dev)
 			udc_hpm_handler_setup(dev, &setup);
 		}
 	}
+#if defined(CONFIG_HS2_HPM51_METRICS)
+	uint32_t finished=*(volatile uint32_t *)(uintptr_t)HPM_MCHTMR;
+	uint32_t elapsed=finished-irq_entry_tick;
+	if(elapsed>fast51_irq_metrics[1])fast51_irq_metrics[1]=elapsed;
+	if(normal_started && finished-normal_started>fast51_irq_metrics[3])
+		fast51_irq_metrics[3]=finished-normal_started;
+#endif
 }
 
 /* Return actual USB device speed */
@@ -1034,6 +1182,9 @@ static int udc_hpm_ep_enqueue(const struct device *dev,
 		return -EACCES;
 	}
 #endif
+#if defined(CONFIG_HS2_HPM51_FAST)
+	if(cfg->addr==fast51.ep)return -EACCES;
+#endif
 	udc_buf_put(cfg, buf);
 	if (cfg->stat.halted) {
 		LOG_DBG("ep 0x%02x halted", cfg->addr);
@@ -1048,6 +1199,21 @@ static int udc_hpm_ep_dequeue(const struct device *dev,
 {
 	struct net_buf *buf;
 	unsigned int key;
+
+#if defined(CONFIG_HS2_SINGLECORE)
+	/* Cancellation must stop DMA BEFORE net_buf ownership is returned.
+	 * The vendor path previously only removed the software queue. */
+	struct udc_hpm_data *priv=udc_get_private(dev);
+	USB_Type *regs=priv->handle.regs;
+	uint32_t bit=1u<<((cfg->addr&0x0fu)+((cfg->addr&0x80u)?16u:0u));
+	key=irq_lock();
+	regs->ENDPTFLUSH=bit;
+	unsigned spins=20000;
+	while((regs->ENDPTFLUSH&bit) && --spins) { }
+	if(!spins || (regs->ENDPTSTAT&bit)) {irq_unlock(key);return -EIO;}
+	regs->ENDPTCOMPLETE=bit;
+	irq_unlock(key);
+#endif
 
 	cfg->stat.halted = false;
 	buf = udc_buf_get_all(dev, cfg->addr);
@@ -1108,6 +1274,9 @@ static int udc_hpm_ep_disable(const struct device *dev,
 {
 	struct udc_hpm_data *priv = udc_get_private(dev);
 	usb_device_handle_t *handle = &priv->handle;
+#if defined(CONFIG_HS2_HPM51_FAST)
+	if(cfg->addr==fast51.ep)fast51_dead();
+#endif
 
 	LOG_DBG("Disable ep 0x%02x", cfg->addr);
 
@@ -1152,6 +1321,9 @@ static int udc_hpm_enable(const struct device *dev)
 
 static int udc_hpm_disable(const struct device *dev)
 {
+#if defined(CONFIG_HS2_HPM51_FAST)
+	fast51_dead();
+#endif
 	struct udc_hpm_data *priv = udc_get_private(dev);
 	usb_device_handle_t *handle = &priv->handle;
 

@@ -137,6 +137,9 @@ static int hpmicro_i2c_configure(const struct device *dev,
 	return 0;
 }
 
+#if defined(CONFIG_HS2_SINGLECORE)
+#include "hpm51_poll.h"
+#endif
 static int hpmicro_i2c_transfer(const struct device *dev,
 				 struct i2c_msg *msgs,
 				 uint8_t num_msgs, uint16_t addr)
@@ -157,6 +160,12 @@ static int hpmicro_i2c_transfer(const struct device *dev,
 
 	k_mutex_lock(&data->mutex, K_FOREVER);
 
+#if defined(CONFIG_HS2_SINGLECORE)
+	if(!data->slave) {
+		ret=num_msgs==1 ? hpm51_master_poll(dev,msgs,addr) : -ENOTSUP;
+		k_mutex_unlock(&data->mutex);return ret;
+	}
+#endif
 	/*
 	 * Address probe / simple master write-read: use SDK polling helpers so
 	 * ADDRHIT (slave ACK) is judged the same way as hpm_sdk i2c_master_write.

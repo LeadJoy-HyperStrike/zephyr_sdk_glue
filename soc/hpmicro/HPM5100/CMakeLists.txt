@@ -5,8 +5,14 @@ zephyr_include_directories(.)
 zephyr_sources(
   start.S
   soc.c
-  power.c
 )
+
+# The vendor file overrides arch_cpu_idle even with CONFIG_PM=n. Respect
+# the explicit no-clock-gating bring-up/real-time configuration instead
+# of silently enabling Wait mode (and touching WKUP state) in that case.
+if(CONFIG_PM OR CONFIG_POWEROFF OR CONFIG_SOC_HPM5100_CPU_IDLE_WAIT)
+  zephyr_sources(power.c)
+endif()
 
 if(CONFIG_SOC_ANDES_V5_HWDSP)
   zephyr_cc_option(-mext-dsp)

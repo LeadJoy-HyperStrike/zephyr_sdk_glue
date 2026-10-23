@@ -69,13 +69,27 @@ static void soc_init_clock(void)
 	pcfg_dcdc_set_voltage(HPM_PCFG, 1275);
 #endif
 
-	/*
-	 * PLL0 VCO stays 720MHz. CLK0 postdiv 1.8 → 400MHz.
-	 * CPU /1 = 400MHz, AHB /2 of CPU = 200MHz (BUS_FREQ_MAX).
-	 */
+#if defined(CONFIG_HS2_HPM51_CLOCK_400)
+	/* 2026-10-19: owner verified this board at 400/200 MHz. Volatile
+	 * clocks only, NEVER program voltage/OTP. The app is fully in RAM.
+	 * Move CPU off PLL0 before changing it; leave PLL1/USB clock alone. */
+	sysctl_config_cpu0_domain_clock(HPM_SYSCTL, clock_source_osc0_clk0, 1, 2);
+	if (pllctlv2_init_pll_with_freq(HPM_PLLCTLV2, pllctlv2_pll0, 800000000u) == status_success) {
+		pllctlv2_set_postdiv(HPM_PLLCTLV2, pllctlv2_pll0, pllctlv2_clk0, pllctlv2_div_1p0);
+		sysctl_config_cpu0_domain_clock(HPM_SYSCTL, clock_source_pll0_clk0, 2, 2);
+	}
+#elif defined(CONFIG_HS2_HPM51_SAFE_CLOCK)
+	/* Product board has a fixed 1.2 V rail, not the high-voltage EVK supply.
+	 * PLL0 CLK0 = 720 MHz: CPU /3 = 240 MHz, AHB /2 = 120 MHz.
+	 * This is volatile clock setup only; no supply/OTP changes. */
+	sysctl_config_cpu0_domain_clock(HPM_SYSCTL, clock_source_pll0_clk0, 3, 2);
+#else
+	/* Preserve the upstream EVK's 720MHz / 1.8 clock recipe. HS2 keeps
+	 * its already-tested 800MHz / 2 recipe above, without voltage writes. */
 	pllctlv2_set_postdiv(HPM_PLLCTLV2, pllctlv2_pll0, pllctlv2_clk0,
 			     pllctlv2_div_1p8);
 	sysctl_config_cpu0_domain_clock(HPM_SYSCTL, clock_source_pll0_clk0, 1, 2);
+#endif
 
 	clock_update_core_clock();
 
