@@ -10,3 +10,15 @@ config I2C_HPMICRO
 	select HAS_HPMSDK_I2C
 	help
 	  Enable the hpmicro i2c driver.
+
+config I2C_HPMICRO_VENDOR_HPM5100
+	bool "HPM5100: the vendor I2C driver of the 2026-10-12 drop"
+	default y
+	depends on I2C_HPMICRO && SOC_SERIES_HPM5100
+	help
+	  The vendor driver (SDK polling helpers for single-message
+	  transfers). Say n to build the driver every other SoC uses -
+	  bus-time-bounded transfers, RM-ordered abort, refusal of
+	  mis-sequenced message shapes, arm-before-launch interrupt enabling -
+	  which HS2's touchpad recovery relies on. The I2C IP and its register
+	  map are the same on HPM5100 and HPM6E00.

@@ -27,7 +27,8 @@
  * Two implementations share this file since the 2026-10-12 vendor HPM5100
  * drop (sdk_glue vendor/hpm5100-2026-10-12):
  *
- * - CONFIG_SOC_SERIES_HPM5100: the vendor driver (SDK polling helpers for
+ * - CONFIG_I2C_HPMICRO_VENDOR_HPM5100 (default on HPM5100): the vendor
+ *   driver (SDK polling helpers for
  *   single-message transfers, 100 ms completion wait, reworked address-hit /
  *   NACK handling in the ISR), verbatim except for the ISR's message
  *   accounting, which is fixed the same way as the other branch (the vendor
@@ -60,7 +61,7 @@ struct hpmicro_i2c_current_transfer {
 	uint8_t status;
 };
 
-#if defined(CONFIG_SOC_SERIES_HPM5100)
+#if defined(CONFIG_I2C_HPMICRO_VENDOR_HPM5100)
 
 struct hpmicro_i2c_data {
 	struct hpmicro_i2c_current_transfer transfer;
@@ -506,7 +507,7 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_isr(const struct device
 	}
 }
 
-#else /* !CONFIG_SOC_SERIES_HPM5100 */
+#else /* !CONFIG_I2C_HPMICRO_VENDOR_HPM5100 */
 
 /*
  * A controller transfer is bounded by what it can take on the wire, never by a
@@ -1081,7 +1082,7 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_isr(const struct device
 	}
 }
 
-#endif /* CONFIG_SOC_SERIES_HPM5100 */
+#endif /* CONFIG_I2C_HPMICRO_VENDOR_HPM5100 */
 
 
 static int hpmicro_i2c_init(const struct device *dev)
