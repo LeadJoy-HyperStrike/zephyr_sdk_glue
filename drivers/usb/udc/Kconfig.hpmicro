@@ -50,6 +50,18 @@ config UDC_HPM_LATENCY_HOOK
 	  hs2_udc_lat_completion() hook for every completed endpoint. Read-only
 	  diagnostics; adds ~20 cycles per completion.
 
+config UDC_HPM_FASTPATH_ISR_ENTRY_CB
+	bool "HS2 fast path: a callback as the UDC ISR's first act"
+	default n
+	depends on UDC_HPM_FASTPATH
+	help
+	  Let the application register one function the UDC ISR calls before
+	  it reads or clears anything (udc_hpm_fastpath_set_isr_entry_cb). For
+	  a single-core engine that owns a masked endpoint and times its
+	  completions from the interrupt (HS2 HPM5151): the callback reads its
+	  clock first and consumes its own ENDPTCOMPLETE bit, so the time it
+	  takes does not depend on how much the rest of the ISR has to do.
+
 config UDC_HPM_FASTPATH
 	bool "HS2 single-endpoint IN fast path (direct ISR completion)"
 	default n

@@ -201,6 +201,10 @@ static struct {
 	 * URE/VBUS-removed ISR branches before the endpoint flush. */
 	volatile udc_hpm_fastpath_bus_cb_t bus_cb;
 	void *bus_ctx;
+#if defined(CONFIG_UDC_HPM_FASTPATH_ISR_ENTRY_CB)
+	volatile udc_hpm_fastpath_isr_entry_cb_t isr_entry_cb;
+	void *isr_entry_ctx;
+#endif
 } fastpath;
 
 /* Flush stale prime/buffer-ready state off the (IN) endpoint before the
@@ -289,6 +293,20 @@ void udc_hpm_fastpath_set_bus_cb(const struct device *dev,
 	fastpath.bus_cb = cb;
 	irq_unlock(key);
 }
+
+#if defined(CONFIG_UDC_HPM_FASTPATH_ISR_ENTRY_CB)
+void udc_hpm_fastpath_set_isr_entry_cb(const struct device *dev,
+				       udc_hpm_fastpath_isr_entry_cb_t cb, void *ctx)
+{
+	unsigned int key;
+
+	ARG_UNUSED(dev);
+	key = irq_lock();
+	fastpath.isr_entry_ctx = ctx;
+	fastpath.isr_entry_cb = cb;
+	irq_unlock(key);
+}
+#endif
 
 void udc_hpm_fastpath_release(const struct device *dev, uint8_t ep_addr)
 {
@@ -797,6 +815,15 @@ static void udc_hpm_isr(const struct device *dev)
 	uint32_t int_status;
 	uint32_t transfer_len;
 	bool ep_cb_req;
+#if defined(CONFIG_UDC_HPM_FASTPATH_ISR_ENTRY_CB)
+	/* First, before any status read: a single-core owner times its
+	 * completions here (udc_hpm_fastpath.h). */
+	udc_hpm_fastpath_isr_entry_cb_t entry_cb = fastpath.isr_entry_cb;
+
+	if (entry_cb != NULL) {
+		entry_cb(fastpath.isr_entry_ctx);
+	}
+#endif
 #if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
 	uint32_t isr_cycle = udc_hpm_cycle_now();
 #endif

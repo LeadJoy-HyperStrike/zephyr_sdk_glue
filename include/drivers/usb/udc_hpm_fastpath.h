@@ -91,4 +91,16 @@ int udc_hpm_fastpath_export(const struct device *dev, uint8_t ep_addr,
 void udc_hpm_fastpath_mask_complete(const struct device *dev, uint8_t ep_addr,
 				    bool mask);
 
+#if defined(CONFIG_UDC_HPM_FASTPATH_ISR_ENTRY_CB)
+/*
+ * The UDC ISR's first act, before it reads or W1C-clears any status: call
+ * cb(ctx) - every time the ISR runs, whatever raised it. For the owner of a
+ * masked endpoint that times its completions from this interrupt (an IOC
+ * dTD): read the clock, then take its own ENDPTCOMPLETE bit. NULL removes it.
+ */
+typedef void (*udc_hpm_fastpath_isr_entry_cb_t)(void *ctx);
+void udc_hpm_fastpath_set_isr_entry_cb(const struct device *dev,
+				       udc_hpm_fastpath_isr_entry_cb_t cb, void *ctx);
+#endif
+
 #endif /* SDK_GLUE_INCLUDE_DRIVERS_USB_UDC_HPM_FASTPATH_H_ */
