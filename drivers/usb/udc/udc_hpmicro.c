@@ -810,20 +810,20 @@ static int udc_hpm_handler_in(const struct device *dev, uint8_t ep,
 
 static void udc_hpm_isr(const struct device *dev)
 {
-	struct udc_hpm_data *priv = udc_get_private(dev);
-	usb_device_handle_t *handle = &priv->handle;
-	uint32_t int_status;
-	uint32_t transfer_len;
-	bool ep_cb_req;
 #if defined(CONFIG_UDC_HPM_FASTPATH_ISR_ENTRY_CB)
-	/* First, before any status read: a single-core owner times its
-	 * completions here (udc_hpm_fastpath.h). */
+	/* First, before any status read and before dev->data (struct device is
+	 * in XIP flash): a single-core owner times its completions here. */
 	udc_hpm_fastpath_isr_entry_cb_t entry_cb = fastpath.isr_entry_cb;
 
 	if (entry_cb != NULL) {
 		entry_cb(fastpath.isr_entry_ctx);
 	}
 #endif
+	struct udc_hpm_data *priv = udc_get_private(dev);
+	usb_device_handle_t *handle = &priv->handle;
+	uint32_t int_status;
+	uint32_t transfer_len;
+	bool ep_cb_req;
 #if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
 	uint32_t isr_cycle = udc_hpm_cycle_now();
 #endif
