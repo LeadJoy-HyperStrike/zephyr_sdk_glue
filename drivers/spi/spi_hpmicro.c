@@ -635,6 +635,26 @@ static int spi_hpm_configure(const struct device *dev,
 	return 0;
 }
 
+/* Undo spi_context_lock() after spi_hpm_configure() failed. Not
+ * spi_context_release(): it decides through ctx->config->operation, and a
+ * configure that fails on first use returns before ctx->config is set - the
+ * NULL->operation load then reads ILM at 0x4, and a garbage SPI_LOCK_ON in it
+ * keeps the bus locked for good. Same decision as release() on a negative
+ * status, made on the request itself. */
+static void spi_hpm_unlock_unconfigured(struct spi_context *ctx,
+					const struct spi_config *spi_cfg)
+{
+#ifndef CONFIG_SPI_ASYNC
+	if (spi_cfg->operation & SPI_LOCK_ON) {
+		return;
+	}
+#else
+	ARG_UNUSED(spi_cfg);
+#endif
+	ctx->owner = NULL;
+	k_sem_give(&ctx->lock);
+}
+
 #ifdef CONFIG_SPI_HPM_SPI_DMA
 
 #ifdef CONFIG_SPI_ASYNC
@@ -947,7 +967,8 @@ static int transceive_dma(const struct device *dev,
 
 	ret = spi_hpm_configure(dev, spi_cfg);
 	if (ret) {
-		goto out;
+		spi_hpm_unlock_unconfigured(&data->ctx, spi_cfg);
+		return ret;
 	}
 
 	spi_context_buffers_setup(&data->ctx, tx_bufs, rx_bufs, 1);
@@ -1026,7 +1047,8 @@ static int transceive(const struct device *dev,
 
 	ret = spi_hpm_configure(dev, spi_cfg);
 	if (ret) {
-		goto out;
+		spi_hpm_unlock_unconfigured(&data->ctx, spi_cfg);
+		return ret;
 	}
 
 	spi_context_buffers_setup(&data->ctx, tx_bufs, rx_bufs, 1);
@@ -1038,7 +1060,6 @@ static int transceive(const struct device *dev,
 	spi_hpm_transfer_next_packet(dev);
 
 	ret = spi_context_wait_for_completion(&data->ctx);
-out:
 	spi_context_release(&data->ctx, ret);
 
 	return ret;
