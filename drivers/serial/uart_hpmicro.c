@@ -536,11 +536,28 @@ int uart_hpm_fifo_fill(const struct device *dev, const uint8_t *tx_data,
 	const struct uart_hpm_cfg *const cfg = dev->config;
 	uint8_t num_tx = 0U;
 
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+	/*
+	 * THRE = the TX FIFO is empty (LSR): room for UART_SOC_FIFO_SIZE
+	 * bytes, so up to 16 go in without waiting. uart_send_byte() spins
+	 * on THRE before every byte - one character time per byte from the
+	 * third on, inside the ISR: ~1.2 ms per 16 bytes at 115200 with
+	 * every interrupt held off, the single-core 8 kHz engine's included
+	 * (HS2 census 2026-10-24). The HPM6E00 half keeps its byte-identical
+	 * build; it has the same wait.
+	 */
+	if ((((UART_Type *)cfg->base)->LSR & UART_LSR_THRE_MASK) != 0U) {
+		while ((len - num_tx > 0) && (num_tx < 16)) {
+			uart_write_byte((UART_Type *)cfg->base, tx_data[num_tx++]);
+		}
+	}
+#else
 	if (uart_check_status((UART_Type *)cfg->base, uart_stat_transmitter_empty) != 0) {
 		while ((len - num_tx > 0) && (num_tx < 16)) {
 			uart_send_byte((UART_Type *)cfg->base, tx_data[num_tx++]);
 		}
 	}
+#endif
 
 	return num_tx;
 }
@@ -577,11 +594,22 @@ int uart_hpm_irq_tx_ready(const struct device *dev)
 {
 	const struct uart_hpm_cfg *const cfg = dev->config;
 
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+	/* The FIFO takes bytes (THRE) and the TX interrupt is on, as the
+	 * API asks. TEMT also waits for the shift register: right after the
+	 * THRE interrupt it is still 0, nothing is written and the interrupt,
+	 * still asserted, re-enters until the last byte has left. */
+	UART_Type *base = (UART_Type *)cfg->base;
+
+	return ((base->LSR & UART_LSR_THRE_MASK) != 0U &&
+		(base->IER & UART_IER_ETHEI_MASK) != 0U) ? 1 : 0;
+#else
 	if (uart_check_status((UART_Type *)cfg->base, uart_stat_transmitter_empty) != 0) {
 		return 1;
 	} else {
 		return 0;
 	}
+#endif
 }
 
 int uart_hpm_irq_tx_complete(const struct device *dev)
