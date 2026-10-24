@@ -472,7 +472,11 @@ static int udc_hpm_ep_feed(const struct device *dev,
 			data = buf->data;
 #endif
 			status = usb_device_edpt_xfer(handle, cfg->addr, data, len);
-#if defined(CONFIG_UDC_HPM_LATENCY_HOOK)
+#if defined(CONFIG_UDC_HPM_LATENCY_HOOK) && !defined(CONFIG_SOC_SERIES_HPM5100)
+			/* Not on HPM5100: in the ISR (a queued IN buffer fed
+			 * after a completion) a prime that does not take spins
+			 * all 2000 reads - 70-120 us with interrupts off on one
+			 * core, for a diagnostic (HS2 census 2026-10-24). */
 			if (status) {
 				USB_Type *regs = handle->regs;
 				uint32_t bit = HPM_BITSMASK(1, cfg->addr & 0x0F)
@@ -1308,11 +1312,32 @@ static int udc_hpm_pm_action(const struct device *dev,
 
 static int udc_hpm_lock(const struct device *dev)
 {
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+	/*
+	 * The ISR comes here too: every SETUP allocates through
+	 * udc_ctrl_alloc() -> udc_ep_buf_alloc(). A mutex there "succeeds"
+	 * when the interrupted thread holds it and, when a preempted thread
+	 * holds it, pends the interrupted thread from inside the ISR (asserts
+	 * are off, nothing says so). Interrupts do not nest on this port and
+	 * what the ISR does under this lock - net_buf allocation and free
+	 * with K_NO_WAIT - is ISR-safe on its own, so the ISR leaves the mutex
+	 * alone (HS2 single-core census 2026-10-24). The HPM6E00 half keeps
+	 * its byte-identical build; it has the same hazard.
+	 */
+	if (k_is_in_isr()) {
+		return 0;
+	}
+#endif
 	return udc_lock_internal(dev, K_FOREVER);
 }
 
 static int udc_hpm_unlock(const struct device *dev)
 {
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+	if (k_is_in_isr()) {
+		return 0;
+	}
+#endif
 	return udc_unlock_internal(dev);
 }
 
