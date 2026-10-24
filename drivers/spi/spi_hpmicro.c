@@ -265,6 +265,24 @@ static void spi_hpm_prepare_control(spi_control_config_t *control_config,
 	}
 }
 
+/*
+ * A packet that failed to start or to run: release CS and finish the context
+ * with the error, as the end of the packet chain does with 0. Returning
+ * without it left a GPIO CS asserted - the next transfer then starts without
+ * a falling edge and the BMI423 reads it as the tail of the failed one - and
+ * the caller waited out spi_context_wait_for_completion()'s timeout for a
+ * completion nobody would give (review 2026-10-24).
+ */
+static void spi_hpm_transfer_failed(const struct device *dev, int err)
+{
+	struct spi_hpm_data *data = dev->data;
+
+	if (!spi_hpm_is_slave(data->ctx.config)) {
+		spi_context_cs_control(&data->ctx, false);
+	}
+	spi_context_complete(&data->ctx, dev, err);
+}
+
 static void spi_hpm_transfer_next_packet(const struct device *dev)
 {
 	const struct spi_hpm_config *config = dev->config;
@@ -315,6 +333,7 @@ static void spi_hpm_transfer_next_packet(const struct device *dev)
 		stat = spi_control_init(base, &control_config, tx_size, rx_size);
 		if (stat != status_success) {
 			LOG_ERR("SPI control init failed");
+			spi_hpm_transfer_failed(dev, -EIO);
 			return;
 		}
 
@@ -340,6 +359,7 @@ static void spi_hpm_transfer_next_packet(const struct device *dev)
 			if (stat != status_success) {
 				spi_disable_interrupt(base, irq_mask);
 				LOG_ERR("SPI write command failed");
+				spi_hpm_transfer_failed(dev, -EIO);
 				return;
 			}
 		}
@@ -380,6 +400,7 @@ static void spi_hpm_transfer_next_packet(const struct device *dev)
 
 		if (stat != status_success) {
 			LOG_ERR("Transfer failed");
+			spi_hpm_transfer_failed(dev, -EIO);
 			return;
 		}
 
@@ -977,6 +998,8 @@ static int transceive_dma(const struct device *dev,
 		spi_context_cs_control(&data->ctx, true);
 	}
 
+	/* Every exit below releases CS at `out` (spi_hpm_transfer_failed's reason:
+	 * a CS left asserted merges the next frame into this one). */
 	while (data->ctx.rx_len > 0 || data->ctx.tx_len > 0) {
 		ret = spi_hpm_dma_start_chunk(dev);
 		if (ret != 0) {
@@ -1013,11 +1036,10 @@ static int transceive_dma(const struct device *dev,
 				      MIN(data->dma_chunk_rx, data->ctx.rx_len));
 	}
 
+out:
 	if (!spi_hpm_is_slave(spi_cfg)) {
 		spi_context_cs_control(&data->ctx, false);
 	}
-
-out:
 	spi_context_release(&data->ctx, ret);
 
 	return ret;
