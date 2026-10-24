@@ -1181,11 +1181,16 @@ static int udc_hpm_init(const struct device *dev)
 	 * MUST NOT run on HS2/HPM6E00: usb_phy_using_internal_vbus() makes the
 	 * PHY ignore the VBUS pin, which kills the VBUS-removed/URE bus-death
 	 * detection the fastpath kill switch (cec27c0) and the auto-disconnect
-	 * sleep design rely on; the 100 ms busy-wait would also stall every
-	 * boot.
+	 * sleep design rely on; the busy-wait would also stall every boot.
+	 *
+	 * The wait is for the VBUS a USB_PWR pin switches (EVK host port), so
+	 * it is a Kconfig: a board that routes no USB0_PWR sets 0 and skips
+	 * it on every init (CONFIG_UDC_HPMICRO_HPM5100_POWER_SETTLE_MS).
 	 */
 	usb_hcd_set_power_ctrl_polarity(config->base, true);
-	k_busy_wait(100 * 1000);
+#if CONFIG_UDC_HPMICRO_HPM5100_POWER_SETTLE_MS > 0
+	k_busy_wait(CONFIG_UDC_HPMICRO_HPM5100_POWER_SETTLE_MS * 1000);
+#endif
 	usb_phy_using_internal_vbus(config->base);
 #endif
 

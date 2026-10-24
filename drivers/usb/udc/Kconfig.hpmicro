@@ -25,6 +25,22 @@ config UDC_HPMICRO
 	  data with no cache maintenance, which corrupts transfers on
 	  D-cache-enabled parts.
 
+config UDC_HPMICRO_HPM5100_POWER_SETTLE_MS
+	int "HPM5100: wait for USB_PWR-switched VBUS before internal VBUS (ms)"
+	default 100
+	range 0 1000
+	depends on UDC_HPMICRO && SOC_SERIES_HPM5100
+	help
+	  udc_hpm_init() on HPM5100 follows the hpm5100evk board_init_usb():
+	  set the host-port power control polarity, wait for the VBUS that the
+	  USB_PWR pin switches to settle ("Time depend on decoupling
+	  capacitor", hpm_sdk boards/hpm5100evk/board.c), then select the
+	  internal VBUS session detect (the HPM5100 packages have no VBUS
+	  pin). The wait busy-loops on every controller init - every mode
+	  switch on a device that re-initialises its stack to change identity.
+	  A device-only board that routes no USB0_PWR has nothing to wait for
+	  and sets 0. The default keeps the vendor behaviour.
+
 config UDC_HPM_LATENCY_HOOK
 	bool "HS2 latency instrumentation hook in the UDC ISR"
 	default n
