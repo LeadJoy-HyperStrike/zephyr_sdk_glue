@@ -44,7 +44,17 @@ static void flash_hpm_dc_drop(off_t offset, size_t size)
 }
 LOG_MODULE_REGISTER(flash_hpmicro, CONFIG_FLASH_LOG_LEVEL);
 
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+/* HS2 2026-11-02: Zephyr's flash API is 0 or a negative errno. A failed
+ * hpm_stat_t is positive, and NVS hands a positive rc up as a byte count:
+ * settings_save_one() then reports success for a write that never happened.
+ * HPM5100's erase maps its failures to -EIO already; its writes do now.
+ * HPM6E00 keeps the raw status (its build does not change) and the same
+ * hazard. */
+#define HPM_STATUS_ZEPHYR_RET(x)    (((x) == status_success) ? 0 : -EIO)
+#else
 #define HPM_STATUS_ZEPHYR_RET(x)    (x)
+#endif
 
 static xpi_nor_config_t s_xpi_nor_config;
 
