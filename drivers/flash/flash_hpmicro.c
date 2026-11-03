@@ -165,6 +165,33 @@ static int flash_hpmicro_read(const struct device *dev, off_t offset,
     return 0;
 }
 
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+/*
+ * HS2 2026-11-02 (V1A first board): rom_xpi_nor_program() reads its source
+ * while the XPI runs the program command, and a read of the XIP window at
+ * that moment is a bus error. Every named settings_save_one() hit it - the
+ * settings NVS backend writes the name straight from the caller's string,
+ * which sits in .rodata in this very flash (mcause 5, mepc in the BootROM,
+ * mtval = "hs2/c1fault"). Parts with the D-cache on get away with it: the
+ * strlen() just before leaves the string in a cache line. HPM5100 runs with
+ * the D-cache off. So a source inside the flash goes through one RAM page per
+ * ROM call, copied under the same irq_lock (one static page: no other writer
+ * can get in between, and no caller's stack grows); RAM sources keep the
+ * direct call. The copy reads the window as the CPU sees it, which with the
+ * ROM's slot-1 remap on is still the running image's bytes.
+ */
+static uint32_t flash_hpm_wr_bounce[64];
+
+static bool flash_hpm_src_in_flash(const void *data, size_t size)
+{
+	uintptr_t a = (uintptr_t)data;
+	uintptr_t base = (uintptr_t)CONFIG_FLASH_BASE_ADDRESS;
+	uintptr_t end = base + (uintptr_t)CONFIG_FLASH_SIZE * 1024u;
+
+	return size != 0u && a < end && a + size > base;
+}
+#endif
+
 static int flash_hpmicro_write(const struct device *dev, off_t offset,
                  const void *data, size_t size)
 {
@@ -175,6 +202,27 @@ static int flash_hpmicro_write(const struct device *dev, off_t offset,
         initted = true;
         flash_hpmicro_init(dev);
     }
+#if defined(CONFIG_SOC_SERIES_HPM5100)
+	if (flash_hpm_src_in_flash(data, size)) {
+		const uint8_t *src = data;
+
+		while (size > 0u && status == status_success) {
+			size_t n = MIN(size, sizeof(flash_hpm_wr_bounce));
+
+			key = irq_lock();
+			memcpy(flash_hpm_wr_bounce, src, n);
+			status = rom_xpi_nor_program(dev_data->controller, xpi_xfer_channel_auto,
+						     &s_xpi_nor_config, flash_hpm_wr_bounce,
+						     offset, n);
+			flash_hpm_dc_drop(offset, n);
+			irq_unlock(key);
+			src += n;
+			offset += (off_t)n;
+			size -= n;
+		}
+		return HPM_STATUS_ZEPHYR_RET(status);
+	}
+#endif
     key = irq_lock();
     status = rom_xpi_nor_program(dev_data->controller, xpi_xfer_channel_auto, &s_xpi_nor_config,
                         data, offset, size);
