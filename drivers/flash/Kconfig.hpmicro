@@ -15,3 +15,14 @@ config FLASH_HPMICRO
 	select FLASH_HAS_EXPLICIT_ERASE
 	help
 	  Enable the hpmicro flash driver.
+
+config FLASH_HPMICRO_PRE_KERNEL
+	bool "Bring the XPI NOR driver up at PRE_KERNEL_1"
+	depends on FLASH_HPMICRO && SOC_SERIES_HPM5100
+	help
+	  Register the flash device at PRE_KERNEL_1 (after the SoC init) instead
+	  of POST_KERNEL, so an application init that must run before anything
+	  else touches the system - the HS2 slot trial-boot accounting - can
+	  program the flash first. The driver uses only irq_lock() and the ROM
+	  API, no kernel objects, so nothing the kernel brings up later is
+	  needed. HPM5100 only; the HPM6E00 build is unchanged.

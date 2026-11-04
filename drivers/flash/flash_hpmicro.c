@@ -387,8 +387,17 @@ static const struct flash_hpmicro_dev_config flash_hpmicro_config = {
 	.controller = (XPI_Type *)DT_INST_REG_ADDR(0),
 };
 
+/* CONFIG_FLASH_HPMICRO_PRE_KERNEL (HPM5100): the device comes up at
+ * PRE_KERNEL_1 so an early application init can program the flash; the driver
+ * needs nothing the kernel brings up later (irq_lock + ROM API only). */
+#if defined(CONFIG_FLASH_HPMICRO_PRE_KERNEL)
+#define FLASH_HPM_INIT_LEVEL PRE_KERNEL_1
+#else
+#define FLASH_HPM_INIT_LEVEL POST_KERNEL
+#endif
+
 DEVICE_DT_INST_DEFINE(0, flash_hpmicro_init,
 		      NULL,
 		      &flash_hpmicro_data, &flash_hpmicro_config,
-		      POST_KERNEL, CONFIG_FLASH_INIT_PRIORITY,
+		      FLASH_HPM_INIT_LEVEL, CONFIG_FLASH_INIT_PRIORITY,
 		      &flash_hpmicro_driver_api);
