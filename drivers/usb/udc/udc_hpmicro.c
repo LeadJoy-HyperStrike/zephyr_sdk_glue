@@ -49,9 +49,13 @@ BUILD_ASSERT(sizeof(struct usb_setup_packet) == 8,
 #endif
 
 /*
- * HPM5151 USB DMA must use system-accessible SRAM (HRAM).
- * Do not place QHD/QTD in DLM/DTCM: core_local_mem_to_sys_address() is
- * identity on this SoC, and AHB cannot DMA into the DLM local window.
+ * HPM5100 has no PMA, hence no .nocache section: the dQH / dTD and the
+ * transfer buffers live wherever the kernel RAM is. That may be the DLM:
+ * on this SoC the DLM is not cached and the other bus masters reach it at
+ * the same address (core_local_mem_to_sys_address() is the identity; the
+ * SDK's own linker script puts the USB buffers there). Verified on the HS2
+ * V1A board on 2026-11-02 with everything in DLM (enumeration + 8 kHz
+ * streaming). Boards that keep their RAM in the AHB SRAM (HRAM) work too.
  */
 #if !defined(CONFIG_SOC_SERIES_HPM5100)
 #define HPM_UDC_DCD_SECTION __attribute__((__section__(".nocache")))

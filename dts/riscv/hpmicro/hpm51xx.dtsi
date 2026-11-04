@@ -21,9 +21,15 @@
 			compatible = "andestech,andescore-d25", "riscv";
 			reg = <0>;
 			status = "okay";
-			riscv,isa = "rv32gc_xandes";
-			i-cache-line-size = <64>;
-			d-cache-line-size = <64>;
+			/* D25: RV32IMAFC (single-precision FPU only, no D), L1 I/D
+			 * 16 KB each with 32-byte lines (hpm_soc_feature.h
+			 * HPM_L1C_CACHELINE_SIZE 32). Nothing in the build reads
+			 * these yet (D-cache is off on HPM5100 and there is no
+			 * CACHE_MANAGEMENT); they are here so that turning the
+			 * D-cache on later starts from the right numbers. */
+			riscv,isa = "rv32imafc_xandes";
+			i-cache-line-size = <32>;
+			d-cache-line-size = <32>;
 			cpu-power-states = <&wait &stop &soft_off>;
 
 			cpu0_intc: interrupt-controller {
