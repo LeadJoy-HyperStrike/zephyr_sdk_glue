@@ -19,6 +19,7 @@
 #if defined(CONFIG_I2C_HPMICRO_DMA)
 #include <string.h>
 #include <zephyr/drivers/dma.h>
+#include <drivers/i2c/i2c_hpm_dma.h>
 #endif
 
 #define HPM_I2C_STATUS_SLAVE_IDLE          0
@@ -561,6 +562,13 @@ struct hpmicro_i2c_data {
 	/* HPM_I2C_DMA_PENDING until the HDMA's callback: 0 = terminal count,
 	 * negative = error / abort. */
 	volatile int dma_result;
+	/* Gave the HDMA path up (first -EIO / -ETIMEDOUT on it): every
+	 * transfer since takes the interrupt path. Thread side, under mutex. */
+	bool dma_off;
+	/* i2c_hpm_dma_get_stats(): a bench readout of the path. */
+	uint32_t dma_xfers;
+	uint32_t dma_nacks;
+	uint32_t dma_fails;
 #endif
 };
 
@@ -759,14 +767,16 @@ static bool hpmicro_i2c_dma_eligible(const struct device *dev,
 	const struct hpmicro_i2c_config *cfg = dev->config;
 	const struct hpmicro_i2c_data *data = dev->data;
 
-	return (cfg->dma_dev != NULL) && device_is_ready(cfg->dma_dev) &&
+	return (cfg->dma_dev != NULL) && !data->dma_off && device_is_ready(cfg->dma_dev) &&
 	       (data->slave == NULL) && (num_msgs == 1U) &&
 	       (msgs->len > 0U) && (msgs->len <= CONFIG_I2C_HPMICRO_DMA_BUF_SIZE) &&
 	       ((msgs->flags & I2C_MSG_STOP) != 0U) &&
 	       ((msgs->flags & I2C_MSG_ADDR_10_BITS) == 0U);
 }
 
-#define HPM_I2C_DMA_PENDING 1
+/* Not a value the HDMA driver reports (0 or a negative errno; Zephyr's
+ * DMA_STATUS_BLOCK is 1). */
+#define HPM_I2C_DMA_PENDING INT32_MAX
 
 /* HDMA ISR context (dmav2_hpmicro.c): terminal count, error or abort. */
 static void hpmicro_i2c_dma_done(const struct device *dma_dev, void *user_data,
@@ -824,9 +834,12 @@ static int hpmicro_i2c_dma_transfer(const struct device *dev, struct i2c_msg *ms
 	dc.user_data = data;
 
 	i2c_dma_disable(i2c);
-	data->dma_result = HPM_I2C_DMA_PENDING;
 	ret = dma_config(cfg->dma_dev, cfg->dma_channel, &dc);
 	if (ret == 0) {
+		/* After dma_config(): dma_setup_channel() clears the channel's
+		 * status, so no callback of an earlier transfer (dma_stop() can
+		 * race its own abort interrupt) lands on this one. */
+		data->dma_result = HPM_I2C_DMA_PENDING;
 		ret = dma_start(cfg->dma_dev, cfg->dma_channel);
 	}
 	if (ret != 0) {
@@ -876,6 +889,15 @@ static int hpmicro_i2c_dma_transfer(const struct device *dev, struct i2c_msg *ms
 		}
 	}
 	if ((ret == 0) && (data->transfer.status == HPM_I2C_STATUS_NOT_ADDRHIT)) {
+		/*
+		 * The ISR issued a STOP-only transaction. Let it finish before the
+		 * next transfer clears CMPL: a CMPL landing after that clear reads
+		 * as the next transfer's address NACK (back-to-back probes find a
+		 * present chip absent). The SDK waits too (hpm_i2c_release_bus());
+		 * same bound as hpmicro_i2c_abort().
+		 */
+		HPM_I2C_POLL_UNTIL((i2c->CMD & I2C_CMD_CMD_MASK) != I2C_CMD_ISSUE_DATA_TRANSMISSION,
+				   hpmicro_i2c_bit_time_us(data) * HPM_I2C_STOP_BUDGET_BITS);
 		ret = -ENXIO;
 	}
 	if (ret == 0) {
@@ -893,8 +915,9 @@ static int hpmicro_i2c_dma_transfer(const struct device *dev, struct i2c_msg *ms
 			ret = -EIO;
 		}
 	}
-	(void)dma_stop(cfg->dma_dev, cfg->dma_channel);
+	/* Requests off, then the channel - the timeout path's order. */
 	i2c_dma_disable(i2c);
+	(void)dma_stop(cfg->dma_dev, cfg->dma_channel);
 	data->dma_active = false;
 	if ((ret == 0) && rd) {
 		memcpy(msg->buf, cfg->dma_buf, msg->len);
@@ -919,10 +942,10 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_dma_isr(const struct de
 	} else {
 		/*
 		 * Address NACK: release the bus as the interrupt path does, FIFO
-		 * requests off first (SDK hpm_i2c_release_bus()): the STOP-only
-		 * CTRL also sets DIR to transmit, whose request is "FIFO not
-		 * full", and a read channel still armed would drain the empty
-		 * FIFO into the buffer.
+		 * requests off first: the STOP-only CTRL also sets DIR to
+		 * transmit, whose request is "FIFO not full", and a read channel
+		 * still armed would drain the empty FIFO into the buffer (the
+		 * SDK's hpm_i2c_release_bus() also clears DMAEN before its STOP).
 		 */
 		data->transfer.status = HPM_I2C_STATUS_NOT_ADDRHIT;
 		i2c_dma_disable(i2c);
@@ -930,6 +953,21 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_dma_isr(const struct de
 		i2c->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
 	}
 	k_sem_give(&data->completion);
+}
+
+int i2c_hpm_dma_get_stats(const struct device *dev, struct i2c_hpm_dma_stats *out)
+{
+	const struct hpmicro_i2c_config *cfg = dev->config;
+	const struct hpmicro_i2c_data *data = dev->data;
+
+	if (cfg->dma_dev == NULL) {
+		return -ENOTSUP;
+	}
+	out->xfers = data->dma_xfers;
+	out->nacks = data->dma_nacks;
+	out->fails = data->dma_fails;
+	out->off = data->dma_off;
+	return 0;
 }
 #endif /* CONFIG_I2C_HPMICRO_DMA */
 
@@ -982,10 +1020,27 @@ static int hpmicro_i2c_transfer(const struct device *dev,
 #if defined(CONFIG_I2C_HPMICRO_DMA)
 	if (hpmicro_i2c_dma_eligible(dev, msgs, num_msgs)) {
 		ret = hpmicro_i2c_dma_transfer(dev, msgs, addr);
-		if (ret != -EAGAIN) {
+		if (ret == 0) {
+			data->dma_xfers++;
+		} else if (ret == -ENXIO) {
+			data->dma_nacks++;
+		} else if (ret != -EAGAIN) {
+			/*
+			 * -EIO / -ETIMEDOUT on the HDMA path. Do not let a wrong
+			 * assumption about the HDMA surface as a touchpad that
+			 * failed closed: give the path up for this instance and
+			 * send this message again on the interrupt path, the shape
+			 * every transfer had before the option (a write may then
+			 * reach the target twice).
+			 */
+			data->dma_fails++;
+			data->dma_off = true;
+		}
+		if ((ret == 0) || (ret == -ENXIO)) {
 			k_mutex_unlock(&data->mutex);
 			return ret;
 		}
+		k_sem_reset(&data->completion);
 		ret = 0;
 	}
 #endif

@@ -383,7 +383,9 @@ static int dma_hpm_dma_configure(const struct device *dev, uint32_t channel, str
 		dma_clear_transfer_status(base, channel);
 	}
 	data->transfer_settings.valid = true;
-	if (status_success != dma_setup_channel(base, channel, &data->transfer_settings.ch_config, false)) {
+	/* The local, not the stored copy: a same-channel configure from an ISR
+	 * in the unlocked window above must not hand this caller its config. */
+	if (status_success != dma_setup_channel(base, channel, &ch_config, false)) {
 		ret = -EFAULT;
 	}
 #else
