@@ -5,7 +5,7 @@ description: HPMicro DMA(hdma/xdma) controller
 
 compatible: "hpmicro,hpm-dmav2"
 
-include: dma-controller.yaml
+include: [dma-controller.yaml, mutable.yaml]
 
 properties:
     reg:
