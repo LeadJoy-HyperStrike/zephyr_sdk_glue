@@ -558,6 +558,9 @@ struct hpmicro_i2c_data {
 	/* The transfer on the wire moves its data with the HDMA: the ISR
 	 * only sees TRANSACTION_COMPLETE (hpmicro_i2c_dma_isr()). */
 	volatile bool dma_active;
+	/* HPM_I2C_DMA_PENDING until the HDMA's callback: 0 = terminal count,
+	 * negative = error / abort. */
+	volatile int dma_result;
 #endif
 };
 
@@ -763,12 +766,15 @@ static bool hpmicro_i2c_dma_eligible(const struct device *dev,
 	       ((msgs->flags & I2C_MSG_ADDR_10_BITS) == 0U);
 }
 
-static bool hpmicro_i2c_dma_idle(const struct device *dev)
-{
-	const struct hpmicro_i2c_config *cfg = dev->config;
-	struct dma_status st;
+#define HPM_I2C_DMA_PENDING 1
 
-	return (dma_get_status(cfg->dma_dev, cfg->dma_channel, &st) == 0) && !st.busy;
+/* HDMA ISR context (dmav2_hpmicro.c): terminal count, error or abort. */
+static void hpmicro_i2c_dma_done(const struct device *dma_dev, void *user_data,
+				 uint32_t channel, int status)
+{
+	ARG_UNUSED(dma_dev);
+	ARG_UNUSED(channel);
+	((struct hpmicro_i2c_data *)user_data)->dma_result = status;
 }
 
 /*
@@ -811,9 +817,14 @@ static int hpmicro_i2c_dma_transfer(const struct device *dev, struct i2c_msg *ms
 	dc.dest_burst_length = 1U;
 	dc.block_count = 1U;
 	dc.head_block = &blk;
-	/* No callback: the transfer ends at the controller's TRANSACTION_COMPLETE. */
+	/* The transfer ends at the controller's TRANSACTION_COMPLETE; the
+	 * callback only says whether the HDMA moved every byte. user_data is
+	 * the RAM data, not the const (flash) struct device. */
+	dc.dma_callback = hpmicro_i2c_dma_done;
+	dc.user_data = data;
 
 	i2c_dma_disable(i2c);
+	data->dma_result = HPM_I2C_DMA_PENDING;
 	ret = dma_config(cfg->dma_dev, cfg->dma_channel, &dc);
 	if (ret == 0) {
 		ret = dma_start(cfg->dma_dev, cfg->dma_channel);
@@ -873,10 +884,12 @@ static int hpmicro_i2c_dma_transfer(const struct device *dev, struct i2c_msg *ms
 		 * completed (a read empties the FIFO as bytes arrive; a write
 		 * fills it before they go out), so its terminal count has been
 		 * serviced by now.  Allow two byte times rather than trust that.
+		 * Then the UM's last step (DMA procedure, "check DATACNT"): the
+		 * controller moved every byte on the bus too.
 		 */
-		HPM_I2C_POLL_UNTIL(hpmicro_i2c_dma_idle(dev),
+		HPM_I2C_POLL_UNTIL(data->dma_result != HPM_I2C_DMA_PENDING,
 				   2U * HPM_I2C_BITS_PER_BYTE * hpmicro_i2c_bit_time_us(data));
-		if (!hpmicro_i2c_dma_idle(dev)) {
+		if ((data->dma_result != 0) || (i2c_get_data_count(i2c) != 0U)) {
 			ret = -EIO;
 		}
 	}
@@ -904,8 +917,15 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_dma_isr(const struct de
 	if ((status & I2C_EVENT_ADDRESS_HIT) != 0U) {
 		data->transfer.status = HPM_I2C_STATUS_ADDRHIT;
 	} else {
-		/* Address NACK: release the bus as the interrupt path does. */
+		/*
+		 * Address NACK: release the bus as the interrupt path does, FIFO
+		 * requests off first (SDK hpm_i2c_release_bus()): the STOP-only
+		 * CTRL also sets DIR to transmit, whose request is "FIFO not
+		 * full", and a read channel still armed would drain the empty
+		 * FIFO into the buffer.
+		 */
 		data->transfer.status = HPM_I2C_STATUS_NOT_ADDRHIT;
+		i2c_dma_disable(i2c);
 		i2c->CTRL = I2C_CTRL_PHASE_STOP_SET(true);
 		i2c->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
 	}

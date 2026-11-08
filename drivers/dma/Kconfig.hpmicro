@@ -18,3 +18,19 @@ config DMAV2_HPMICRO
 	select HAS_HPMSDK_DMAV2
 	help
 	  This option enables the DMAV2 driver for HPM SoC family.
+
+config DMAV2_HPMICRO_SHORT_LOCK
+	bool "Short interrupt-locked sections in the DMAV2 driver"
+	depends on DMAV2_HPMICRO
+	help
+	  dma_config() builds the channel configuration and reads the
+	  controller / DMAMUX base addresses before irq_lock(), so the locked
+	  section is the DMAMUX write, the abort of a busy channel,
+	  dma_setup_channel() and the bookkeeping - no flash reads (struct
+	  device and its config are const) and no memcpy() while locked. The
+	  half-transfer interrupt is masked (the ISR never acted on it), and
+	  the ISR reads the four status registers once and handles only the
+	  channels that are set instead of four reads per channel. For a
+	  single-core part without nested interrupts (HS2's HPM5151), where
+	  every locked section and every ISR delays every other interrupt.
+	  Off, the driver builds exactly as before.

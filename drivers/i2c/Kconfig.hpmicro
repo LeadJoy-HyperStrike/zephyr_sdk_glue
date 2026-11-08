@@ -26,7 +26,10 @@ config I2C_HPMICRO_VENDOR_HPM5100
 config I2C_HPMICRO_DMA
 	bool "Move single-message controller transfers with the HDMA"
 	depends on I2C_HPMICRO && !I2C_HPMICRO_VENDOR_HPM5100
+	# The bounce buffer gets no cache maintenance (HPM5151: D-cache off).
+	depends on !DCACHE
 	select DMA
+	imply DMAV2_HPMICRO_SHORT_LOCK
 	help
 	  An instance whose devicetree node carries a dmas entry named "txrx"
 	  (one HDMA channel and the controller's DMAMUX request) moves the data
@@ -37,7 +40,8 @@ config I2C_HPMICRO_DMA
 	  interrupt) instead of one interrupt per 4-byte FIFO. Every other
 	  shape, and every instance without "txrx", keeps the interrupt path.
 	  Written for HS2's touchpad on the single-core HPM5151, where
-	  interrupts do not nest.
+	  interrupts do not nest (hence DMAV2_HPMICRO_SHORT_LOCK too). Needs
+	  the D-cache off: the bounce buffer gets no cache maintenance.
 
 config I2C_HPMICRO_DMA_BUF_SIZE
 	int "Bounce buffer per DMA instance (bytes)"

@@ -134,6 +134,41 @@ __attribute__((section(".isr")))static void dma_hpm_dma_irq_handler(const struct
 	hpm_stat_t stat;
 
 	LOG_DBG("IRQ CALLED");
+#if defined(CONFIG_DMAV2_HPMICRO_SHORT_LOCK)
+	/*
+	 * Four status reads and the W1C writes for what they showed, instead
+	 * of four reads per channel with dev->config (const, in flash) reloaded
+	 * for each; then only the channels that are set.
+	 */
+	ARG_UNUSED(stat);
+	DMA_Type *base = DEV_BASE(dev);
+	struct dma_hpm_data *ddata = DEV_DATA(dev);
+	const uint32_t chans = BIT_MASK(DT_INST_PROP(0, dma_channels));
+	const uint32_t tc = base->INTTCSTS & chans;
+	const uint32_t half = base->INTHALFSTS & chans;
+	const uint32_t err = base->INTERRSTS & chans;
+	const uint32_t abt = base->INTABORTSTS & chans;
+	uint32_t pending = tc | err | abt;
+
+	if (tc != 0U) {
+		base->INTTCSTS = tc;
+	}
+	if (half != 0U) {
+		base->INTHALFSTS = half;
+	}
+	if (err != 0U) {
+		base->INTERRSTS = err;
+	}
+	if (abt != 0U) {
+		base->INTABORTSTS = abt;
+	}
+	/* No __builtin_ctz(): without Zbb it is a libgcc call, in flash. */
+	for (i = 0; pending != 0U; i++, pending >>= 1) {
+		if ((pending & 1U) != 0U) {
+			hpm_dma_callback(dev, &ddata->data_cb[i], i, (tc & BIT(i)) != 0U);
+		}
+	}
+#else
 	for (i = 0; i < DT_INST_PROP(0, dma_channels); i++) {
         stat = dma_check_transfer_status(DEV_BASE(dev), i);
 
@@ -145,6 +180,7 @@ __attribute__((section(".isr")))static void dma_hpm_dma_irq_handler(const struct
 			hpm_dma_callback(dev, DEV_CHANNEL_DATA(dev, i), i, false);
 		}
 	}
+#endif
 }
 
 static int hpm_dma_get_transfer_width(DMA_Type *base, uint32_t data_size)
@@ -258,6 +294,12 @@ static int dma_hpm_dma_configure(const struct device *dev, uint32_t channel, str
 
 	data->transfer_settings.direction = config->channel_direction;
 
+#if defined(CONFIG_DMAV2_HPMICRO_SHORT_LOCK)
+	/* Read once, before the lock: struct device and its config are const
+	 * (flash, uncached with the D-cache off). */
+	DMA_Type *const base = DEV_BASE(dev);
+	DMAMUX_Type *const mux = DEV_DMAMUX_BASE(dev);
+#else
 	/* Lock and page in the channel configuration */
 	key = irq_lock();
 
@@ -268,6 +310,7 @@ static int dma_hpm_dma_configure(const struct device *dev, uint32_t channel, str
 		dma_abort_channel(DEV_BASE(dev), (1U << channel));
 		dma_clear_transfer_status(DEV_BASE(dev), channel);
 	}
+#endif
 
 
 	ch_config.priority = 0;
@@ -327,6 +370,23 @@ static int dma_hpm_dma_configure(const struct device *dev, uint32_t channel, str
 		ch_config.src_burst_size = burst_size;
 	}
 
+#if defined(CONFIG_DMAV2_HPMICRO_SHORT_LOCK)
+	/* The ISR never acts on the half-transfer interrupt. */
+	ch_config.interrupt_mask = DMA_INTERRUPT_MASK_HALF_TC;
+	/* Nobody reads transfer_settings while valid is false. */
+	data->transfer_settings.ch_config = ch_config;
+
+	key = irq_lock();
+	dmamux_config(mux, DMA_SOC_CHN_TO_DMAMUX_CHN(base, channel), slot, true);
+	if (data->busy) {
+		dma_abort_channel(base, (1U << channel));
+		dma_clear_transfer_status(base, channel);
+	}
+	data->transfer_settings.valid = true;
+	if (status_success != dma_setup_channel(base, channel, &data->transfer_settings.ch_config, false)) {
+		ret = -EFAULT;
+	}
+#else
 	data->transfer_settings.ch_config = ch_config;
 	data->transfer_settings.valid = true;
 
@@ -334,6 +394,7 @@ static int dma_hpm_dma_configure(const struct device *dev, uint32_t channel, str
 		LOG_ERR("Configure DMA channel failed.");
 		ret = -EFAULT;
 	}
+#endif
 
 	data->busy = false;
 	dma_hpm_update_pm_busy(dev);
@@ -345,6 +406,11 @@ static int dma_hpm_dma_configure(const struct device *dev, uint32_t channel, str
 	}
 
 	irq_unlock(key);
+#if defined(CONFIG_DMAV2_HPMICRO_SHORT_LOCK)
+	if (ret != 0) {
+		LOG_ERR("Configure DMA channel failed.");
+	}
+#endif
 
 	return ret;
 }
