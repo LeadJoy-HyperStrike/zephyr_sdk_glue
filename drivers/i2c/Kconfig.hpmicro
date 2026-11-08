@@ -22,3 +22,28 @@ config I2C_HPMICRO_VENDOR_HPM5100
 	  mis-sequenced message shapes, arm-before-launch interrupt enabling -
 	  which HS2's touchpad recovery relies on. The I2C IP and its register
 	  map are the same on HPM5100 and HPM6E00.
+
+config I2C_HPMICRO_DMA
+	bool "Move single-message controller transfers with the HDMA"
+	depends on I2C_HPMICRO && !I2C_HPMICRO_VENDOR_HPM5100
+	select DMA
+	help
+	  An instance whose devicetree node carries a dmas entry named "txrx"
+	  (one HDMA channel and the controller's DMAMUX request) moves the data
+	  of single-message controller transfers - 7-bit address, STOP, up to
+	  I2C_HPMICRO_DMA_BUF_SIZE bytes, what i2c_read() / i2c_write() send -
+	  with the HDMA through a per-instance bounce buffer. The controller
+	  then raises TRANSACTION_COMPLETE only (plus the HDMA's terminal-count
+	  interrupt) instead of one interrupt per 4-byte FIFO. Every other
+	  shape, and every instance without "txrx", keeps the interrupt path.
+	  Written for HS2's touchpad on the single-core HPM5151, where
+	  interrupts do not nest.
+
+config I2C_HPMICRO_DMA_BUF_SIZE
+	int "Bounce buffer per DMA instance (bytes)"
+	depends on I2C_HPMICRO_DMA
+	default 32
+	range 1 4096
+	help
+	  Longest message the DMA path takes; longer ones use the interrupt
+	  path.

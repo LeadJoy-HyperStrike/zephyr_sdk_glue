@@ -16,6 +16,10 @@
 #include <soc.h>
 #include <hpm_i2c_drv.h>
 #include <hpm_clock_drv.h>
+#if defined(CONFIG_I2C_HPMICRO_DMA)
+#include <string.h>
+#include <zephyr/drivers/dma.h>
+#endif
 
 #define HPM_I2C_STATUS_SLAVE_IDLE          0
 #define HPM_I2C_STATUS_SLAVE_BEGIN_WRITE   1
@@ -38,6 +42,11 @@
  *   RM-ordered abort, refusal of mis-sequenced message shapes and
  *   arm-before-launch interrupt enabling.
  *
+ * CONFIG_I2C_HPMICRO_DMA (default n, the second branch only; HS2 HPM5151): an
+ * instance with a "txrx" dmas entry moves single-message controller transfers
+ * with the HDMA - see hpmicro_i2c_dma_transfer().  Off, both branches build
+ * exactly as before.
+ *
  * Shared below: the config/transfer structs, init and the instance macros.
  * configure() and target (un)register are identical in both versions but
  * stay inside each branch, so each branch is one contiguous block.
@@ -49,6 +58,15 @@ struct hpmicro_i2c_config {
 	uint32_t clock_div;
 	void (*irq_config_func)(const struct device *dev);
 	const struct pinctrl_dev_config *pincfg;
+#if defined(CONFIG_I2C_HPMICRO_DMA)
+	/* NULL: the node has no "dmas" entry named "txrx", every transfer
+	 * stays on the interrupt path. */
+	const struct device *dma_dev;
+	uint32_t dma_channel;
+	uint32_t dma_request;
+	/* Bounce buffer the HDMA reads / writes (CONFIG_I2C_HPMICRO_DMA_BUF_SIZE). */
+	uint8_t *dma_buf;
+#endif
 };
 
 struct hpmicro_i2c_current_transfer {
@@ -536,6 +554,11 @@ struct hpmicro_i2c_data {
 	struct k_mutex mutex;
 	/* Configured SCL frequency; sizes every timeout and recovery wait. */
 	uint32_t bus_freq_hz;
+#if defined(CONFIG_I2C_HPMICRO_DMA)
+	/* The transfer on the wire moves its data with the HDMA: the ISR
+	 * only sees TRANSACTION_COMPLETE (hpmicro_i2c_dma_isr()). */
+	volatile bool dma_active;
+#endif
 };
 
 #define DEV_BASE(dev) (((struct hpmicro_i2c_config *)(dev->config))->base)
@@ -698,6 +721,198 @@ static void hpmicro_i2c_abort(const struct device *dev)
 	cfg->base->CMD = I2C_CMD_CLEAR_FIFO;
 }
 
+#if defined(CONFIG_I2C_HPMICRO_DMA)
+/*
+ * DMA path (CONFIG_I2C_HPMICRO_DMA; HS2's touchpad on the single-core
+ * HPM5151, 2026-11-07).
+ *
+ * The interrupt path below takes one interrupt for ADDRESS_HIT, one per
+ * FIFO_FULL / FIFO_EMPTY (the FIFO holds 4 bytes) and one for
+ * TRANSACTION_COMPLETE - about 7 for a 20-byte touch report.  Interrupts do
+ * not nest on that core, so each of them can hold off a higher-priority one
+ * (the 8 kHz input engine's timer) for its whole length.  With the HDMA moving
+ * the data the controller raises TRANSACTION_COMPLETE only, and the HDMA one
+ * terminal-count interrupt (the DMA driver's own, always enabled).
+ *
+ * Shape: one controller message, 7-bit address, STOP, 1..BUF_SIZE bytes and
+ * no target registered - what i2c_read() / i2c_write() hand in.  Anything
+ * else takes the interrupt path unchanged.  The data goes through the
+ * driver's own bounce buffer, so the only memory the HDMA touches is one
+ * fixed object (the firmware's bus-master placement check lists it).
+ *
+ * Order, after the SDK (samples/drivers/i2c/dma/master and
+ * i2c_master_start_dma_read/write()): DMAEN off -> channel configured and
+ * started -> CTRL -> DMAEN on -> TRANSACTION_COMPLETE armed -> launch.  Arm
+ * before launch, as in the interrupt path (the 2026-09-08 INTEN race).
+ *
+ * An address NACK still ends in TRANSACTION_COMPLETE, with STATUS.ADDRHIT
+ * clear: the ISR then issues the STOP exactly like the interrupt path.
+ * DMAEN is cleared and the channel stopped on every exit, so the interrupt
+ * path never runs with the controller's FIFO requests routed to the HDMA.
+ */
+static bool hpmicro_i2c_dma_eligible(const struct device *dev,
+				     const struct i2c_msg *msgs, uint8_t num_msgs)
+{
+	const struct hpmicro_i2c_config *cfg = dev->config;
+	const struct hpmicro_i2c_data *data = dev->data;
+
+	return (cfg->dma_dev != NULL) && device_is_ready(cfg->dma_dev) &&
+	       (data->slave == NULL) && (num_msgs == 1U) &&
+	       (msgs->len > 0U) && (msgs->len <= CONFIG_I2C_HPMICRO_DMA_BUF_SIZE) &&
+	       ((msgs->flags & I2C_MSG_STOP) != 0U) &&
+	       ((msgs->flags & I2C_MSG_ADDR_10_BITS) == 0U);
+}
+
+static bool hpmicro_i2c_dma_idle(const struct device *dev)
+{
+	const struct hpmicro_i2c_config *cfg = dev->config;
+	struct dma_status st;
+
+	return (dma_get_status(cfg->dma_dev, cfg->dma_channel, &st) == 0) && !st.busy;
+}
+
+/*
+ * Called with data->mutex held and data->completion reset.  -EAGAIN: the
+ * channel could not be set up and nothing touched the bus - the caller takes
+ * the interrupt path instead.
+ */
+static int hpmicro_i2c_dma_transfer(const struct device *dev, struct i2c_msg *msg,
+				    uint16_t addr)
+{
+	const struct hpmicro_i2c_config *cfg = dev->config;
+	struct hpmicro_i2c_data *data = dev->data;
+	I2C_Type *i2c = cfg->base;
+	const bool rd = (msg->flags & I2C_MSG_RW_MASK) == I2C_MSG_READ;
+	struct dma_block_config blk = {0};
+	struct dma_config dc = {0};
+	int ret;
+
+	if (!rd) {
+		memcpy(cfg->dma_buf, msg->buf, msg->len);
+	}
+
+	blk.block_size = msg->len;
+	if (rd) {
+		blk.source_address = (uint32_t)&i2c->DATA;
+		blk.source_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
+		blk.dest_address = (uint32_t)cfg->dma_buf;
+		blk.dest_addr_adj = DMA_ADDR_ADJ_INCREMENT;
+	} else {
+		blk.source_address = (uint32_t)cfg->dma_buf;
+		blk.source_addr_adj = DMA_ADDR_ADJ_INCREMENT;
+		blk.dest_address = (uint32_t)&i2c->DATA;
+		blk.dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
+	}
+	dc.dma_slot = cfg->dma_request;
+	dc.channel_direction = rd ? PERIPHERAL_TO_MEMORY : MEMORY_TO_PERIPHERAL;
+	dc.source_data_size = 1U;
+	dc.dest_data_size = 1U;
+	dc.source_burst_length = 1U;
+	dc.dest_burst_length = 1U;
+	dc.block_count = 1U;
+	dc.head_block = &blk;
+	/* No callback: the transfer ends at the controller's TRANSACTION_COMPLETE. */
+
+	i2c_dma_disable(i2c);
+	ret = dma_config(cfg->dma_dev, cfg->dma_channel, &dc);
+	if (ret == 0) {
+		ret = dma_start(cfg->dma_dev, cfg->dma_channel);
+	}
+	if (ret != 0) {
+		(void)dma_stop(cfg->dma_dev, cfg->dma_channel);
+		return -EAGAIN;
+	}
+
+	data->transfer.status = HPM_I2C_STATUS_SLAVE_IDLE;
+	data->dma_active = true;
+	i2c_enable_10bit_address_mode(i2c, false);
+	/* W1C: a stale CMPL blocks the transaction, a stale ADDRHIT would read
+	 * as this transfer's acknowledge. */
+	i2c->STATUS = I2C_STATUS_CMPL_MASK | I2C_STATUS_ADDRHIT_MASK;
+	i2c->CMD = I2C_CMD_CLEAR_FIFO;
+	i2c->ADDR = I2C_ADDR_ADDR_SET(addr);
+	i2c->CTRL = I2C_CTRL_DIR_SET(rd ? I2C_DIR_MASTER_READ : I2C_DIR_MASTER_WRITE)
+		  | I2C_CTRL_PHASE_START_SET(true) | I2C_CTRL_PHASE_ADDR_SET(true)
+		  | I2C_CTRL_PHASE_STOP_SET(true) | I2C_CTRL_PHASE_DATA_SET(true)
+#ifdef I2C_CTRL_DATACNT_HIGH_MASK
+		  | I2C_CTRL_DATACNT_HIGH_SET(I2C_DATACNT_MAP(msg->len) >> 8U)
+#endif
+		  | I2C_CTRL_DATACNT_SET(I2C_DATACNT_MAP(msg->len));
+	i2c_dma_enable(i2c);
+	/*
+	 * TRANSACTION_COMPLETE is the only source: an ADDRESS_HIT the interrupt
+	 * path left enabled would fire on this transfer's acknowledge and, with
+	 * nobody clearing it here, keep firing.  Both RMWs happen before launch,
+	 * when no interrupt of this controller can be in flight.
+	 */
+	i2c_disable_irq(i2c, I2C_EVENT_ALL_MASK);
+	i2c_enable_irq(i2c, I2C_EVENT_TRANSACTION_COMPLETE);
+	i2c->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
+
+	ret = k_sem_take(&data->completion, hpmicro_i2c_transfer_timeout(data, msg, 1U));
+	if (ret != 0) {
+		/* As in hpmicro_i2c_transfer(): honour an ISR that already ran. */
+		i2c_disable_irq(i2c, I2C_EVENT_ALL_MASK);
+		if (k_sem_take(&data->completion, K_NO_WAIT) == 0) {
+			ret = 0;
+		} else {
+			/* Requests off before the abort clears the FIFO, so the
+			 * HDMA cannot refill it behind the STOP. */
+			i2c_dma_disable(i2c);
+			(void)dma_stop(cfg->dma_dev, cfg->dma_channel);
+			hpmicro_i2c_abort(dev);
+			ret = -ETIMEDOUT;
+		}
+	}
+	if ((ret == 0) && (data->transfer.status == HPM_I2C_STATUS_NOT_ADDRHIT)) {
+		ret = -ENXIO;
+	}
+	if (ret == 0) {
+		/*
+		 * The HDMA moved the last byte at least a bit time before the STOP
+		 * completed (a read empties the FIFO as bytes arrive; a write
+		 * fills it before they go out), so its terminal count has been
+		 * serviced by now.  Allow two byte times rather than trust that.
+		 */
+		HPM_I2C_POLL_UNTIL(hpmicro_i2c_dma_idle(dev),
+				   2U * HPM_I2C_BITS_PER_BYTE * hpmicro_i2c_bit_time_us(data));
+		if (!hpmicro_i2c_dma_idle(dev)) {
+			ret = -EIO;
+		}
+	}
+	(void)dma_stop(cfg->dma_dev, cfg->dma_channel);
+	i2c_dma_disable(i2c);
+	data->dma_active = false;
+	if ((ret == 0) && rd) {
+		memcpy(msg->buf, cfg->dma_buf, msg->len);
+	}
+	return ret;
+}
+
+/* TRANSACTION_COMPLETE of a DMA-path transfer: the only source it arms. */
+__attribute__((section(".isr"))) static void hpmicro_i2c_dma_isr(const struct device *dev)
+{
+	struct hpmicro_i2c_data *data = dev->data;
+	I2C_Type *i2c = DEV_BASE(dev);
+	const uint32_t status = i2c_get_status(i2c);
+
+	if ((status & I2C_EVENT_TRANSACTION_COMPLETE) == 0U) {
+		return;
+	}
+	i2c_disable_irq(i2c, I2C_EVENT_ALL_MASK);
+	i2c_clear_status(i2c, status & (I2C_EVENT_ADDRESS_HIT | I2C_EVENT_TRANSACTION_COMPLETE));
+	if ((status & I2C_EVENT_ADDRESS_HIT) != 0U) {
+		data->transfer.status = HPM_I2C_STATUS_ADDRHIT;
+	} else {
+		/* Address NACK: release the bus as the interrupt path does. */
+		data->transfer.status = HPM_I2C_STATUS_NOT_ADDRHIT;
+		i2c->CTRL = I2C_CTRL_PHASE_STOP_SET(true);
+		i2c->CMD = I2C_CMD_ISSUE_DATA_TRANSMISSION;
+	}
+	k_sem_give(&data->completion);
+}
+#endif /* CONFIG_I2C_HPMICRO_DMA */
+
 static int hpmicro_i2c_transfer(const struct device *dev,
 				 struct i2c_msg *msgs,
 				 uint8_t num_msgs, uint16_t addr)
@@ -744,6 +959,16 @@ static int hpmicro_i2c_transfer(const struct device *dev,
 	 * phase and reported stale data as a successful transaction.
 	 */
 	k_sem_reset(&data->completion);
+#if defined(CONFIG_I2C_HPMICRO_DMA)
+	if (hpmicro_i2c_dma_eligible(dev, msgs, num_msgs)) {
+		ret = hpmicro_i2c_dma_transfer(dev, msgs, addr);
+		if (ret != -EAGAIN) {
+			k_mutex_unlock(&data->mutex);
+			return ret;
+		}
+		ret = 0;
+	}
+#endif
 	data->transfer.msgs = msgs;
 	data->transfer.curr_buf = msgs->buf;
 	data->transfer.curr_len = msgs->len;
@@ -950,6 +1175,13 @@ __attribute__((section(".isr"))) static void hpmicro_i2c_isr(const struct device
 	struct hpmicro_i2c_current_transfer *transfer = &data->transfer;
 	uint8_t val;
 
+#if defined(CONFIG_I2C_HPMICRO_DMA)
+	if (data->dma_active) {
+		hpmicro_i2c_dma_isr(dev);
+		return;
+	}
+#endif
+
 	volatile uint32_t status, irq;
 	status = i2c_get_status(i2c);
 	irq = i2c_get_irq_setting(i2c);
@@ -1115,13 +1347,35 @@ static const struct i2c_driver_api i2c_api = {
 	.target_unregister = hpmicro_i2c_slave_unregister,
 };
 
+#if defined(CONFIG_I2C_HPMICRO_DMA)
+/* "dmas = <&hdmaN channel source>; dma-names = "txrx";" puts an instance on
+ * the DMA path; one channel serves both directions (one message at a time). */
+#define HPM_I2C_DMA_BUF(idx)							      \
+	IF_ENABLED(DT_INST_DMAS_HAS_NAME(idx, txrx),				      \
+		   (static uint8_t i2c_hpm_dma_buf_##idx				      \
+			[CONFIG_I2C_HPMICRO_DMA_BUF_SIZE] __aligned(4);))
+#define HPM_I2C_DMA_CFG(idx)							      \
+	COND_CODE_1(DT_INST_DMAS_HAS_NAME(idx, txrx),				      \
+		(.dma_dev = DEVICE_DT_GET(DT_INST_DMAS_CTLR_BY_NAME(idx, txrx)),     \
+		 .dma_channel = DT_INST_DMAS_CELL_BY_NAME(idx, txrx, channel),	      \
+		 .dma_request = DT_INST_DMAS_CELL_BY_NAME(idx, txrx, source),	      \
+		 .dma_buf = i2c_hpm_dma_buf_##idx,),				      \
+		(.dma_dev = NULL,))
+#else
+#define HPM_I2C_DMA_BUF(idx)
+#define HPM_I2C_DMA_CFG(idx)
+#endif
+
 #define HPM_I2C_INIT(idx)						      \
 									      \
 static void hpmicro_i2c_isr_config_##idx(const struct device *dev);	      \
 									      \
 PINCTRL_DT_INST_DEFINE(idx);                                                  \
 									      \
+HPM_I2C_DMA_BUF(idx)								      \
+									      \
 static const struct hpmicro_i2c_config i2c_cfg_##idx = {		      \
+	HPM_I2C_DMA_CFG(idx)						      \
 	.base =								      \
 	(I2C_Type *) DT_INST_REG_ADDR(idx),		      \
 	.irq_config_func = hpmicro_i2c_isr_config_##idx,		      \
