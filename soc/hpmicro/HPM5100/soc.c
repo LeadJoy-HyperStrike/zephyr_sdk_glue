@@ -31,6 +31,44 @@ __attribute__((weak)) void c_startup(void)
 {
 }
 
+#define HPM5100_MCHTMR_HZ 24000000UL
+
+/*
+ * The machine timer at 24 MHz.
+ *
+ * The vendor default is osc24m divided by 1: the crystal oscillator's clock
+ * straight into MCHTMR. On HS2 V1A that clock is not clean while SPI3 runs -
+ * PA16..PA19 are packaged right next to XTALI / XTALO (pins 85..88 next to
+ * 84 / 83) - and the MTIME counter then mis-steps at its carries: steps of
+ * -2^k and +(2^k - 16), k = 4..15, some bits of a carry taken and some not.
+ * Zephyr's RV32 machine-timer driver turns a backward one into 178956 ticks
+ * of elapsed time, and the single-core engine's clock is this counter too.
+ * Bench 2026-11-10, one board, IMU read at 6400 Hz: osc24m / 1 stepped on
+ * 31 of 38 boots; osc24m / 2, pll0_clk0 / 15, / 16, pll1_clk0 / 16 and
+ * pll0_clk1 / 25 on none of 55; osc24m / 1 with the IMU idle on none of 8.
+ * CPU frequency (400 / 360 / 300 MHz) and LDO1P1 made no difference.
+ *
+ * So the timer takes PLL0 CLK1 (600 MHz as the ROM preset leaves it, VCO
+ * 720 MHz / 1.2) divided down to the same 24 MHz: locked to the same
+ * crystal, the time base is what it was. Should CLK1 ever not be a whole
+ * multiple of 24 MHz, the vendor default stays - a wrong tick rate would be
+ * worse than the hazard.
+ */
+static void soc_init_mchtmr_clock(void)
+{
+#ifdef CONFIG_SOC_HPM5100_MCHTMR_PLL_CLOCK
+	uint32_t src_hz = pllctlv2_get_pll_postdiv_freq_in_hz(HPM_PLLCTLV2, pllctlv2_pll0,
+							      pllctlv2_clk1);
+	uint32_t div = src_hz / HPM5100_MCHTMR_HZ;
+
+	if (div >= 2U && div <= 256U && div * HPM5100_MCHTMR_HZ == src_hz) {
+		clock_set_source_divider(clock_mchtmr0, clk_src_pll0_clk1, div);
+		return;
+	}
+#endif
+	clock_set_source_divider(clock_mchtmr0, clk_src_osc24m, 1);
+}
+
 static void soc_init_clock(void)
 {
 	uint32_t cpu0_freq = clock_get_frequency(clock_cpu0);
@@ -79,8 +117,7 @@ static void soc_init_clock(void)
 
 	clock_update_core_clock();
 
-	/* Configure mchtmr to 24MHz */
-	clock_set_source_divider(clock_mchtmr0, clk_src_osc24m, 1);
+	soc_init_mchtmr_clock();
 }
 
 /*

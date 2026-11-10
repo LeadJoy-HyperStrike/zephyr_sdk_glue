@@ -104,4 +104,18 @@ config SOC_HPM5100_CPU_IDLE_WAIT
 		ungated (the SDK's board_ungate_mchtmr_at_lp_mode()). Only the
 		CONFIG_PM=n idle path reads it.
 
+config SOC_HPM5100_MCHTMR_PLL_CLOCK
+	bool "Clock the machine timer from PLL0 CLK1, not from the undivided crystal"
+	default y
+	help
+		The vendor default feeds MCHTMR with osc24m divided by 1, the
+		crystal oscillator's clock as it is. With fast edges on the pins
+		next to the crystal (PA16..PA19 are packaged beside XTALI/XTALO)
+		that clock is not clean and the MTIME counter mis-steps at its
+		carries (bench 2026-11-10, soc.c soc_init_mchtmr_clock()). When
+		enabled, MCHTMR runs from PLL0 CLK1 divided down to the same
+		24 MHz (600 MHz / 25): the time base does not change. If PLL0
+		CLK1 is not a whole multiple of 24 MHz the vendor default stays.
+		n restores the vendor default (the A side of an A/B).
+
 endif # SOC_SERIES_HPM5100
